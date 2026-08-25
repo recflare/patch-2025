@@ -1,8 +1,12 @@
 // Standalone injector for the Rec Room 2025 archival patch.
 //
-// Waits for Recroom_Release.exe, waits until the game has loaded GameAssembly.dll
-// and Referee.dll (the patch resolves both at attach time), then loads the patch
-// DLL with CreateRemoteThread + LoadLibraryW so its DllMain runs normally.
+// Waits for an UNPATCHED Recroom_Release.exe, waits until that process has loaded
+// GameAssembly.dll and Referee.dll (the patch resolves both at attach time), then
+// loads the patch DLL with CreateRemoteThread + LoadLibraryW so its DllMain runs
+// normally.
+//
+// Instances that already carry the patch are skipped rather than treated as a reason
+// to stop, so several clients can run side by side with one injector each.
 //
 // No third-party tools required. Ship injector.exe + the patch DLL in the same folder.
 
@@ -10,6 +14,7 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <string>
+#include <vector>
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -23,24 +28,35 @@ static const std::chrono::milliseconds kExitDelay{1500};
 // Modules the patch needs present before it can hook anything.
 static const wchar_t* kRequiredModules[] = { L"GameAssembly.dll", L"Referee.dll" };
 
-static DWORD FindProcessId(const wchar_t* name) {
+// Every process with this name, in enumeration order. Plural on purpose: running two clients on
+// one machine is a normal thing to want, so the injector has to be able to tell them apart instead
+// of assuming the first match is the one that was just launched.
+static void FindProcessIds(const wchar_t* name, std::vector<DWORD>& out) {
+    out.clear();
+
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
+    if (snap == INVALID_HANDLE_VALUE) return;
 
     PROCESSENTRY32W entry{};
     entry.dwSize = sizeof(entry);
 
-    DWORD pid = 0;
     if (Process32FirstW(snap, &entry)) {
         do {
-            if (_wcsicmp(entry.szExeFile, name) == 0) {
-                pid = entry.th32ProcessID;
-                break;
-            }
+            if (_wcsicmp(entry.szExeFile, name) == 0) out.push_back(entry.th32ProcessID);
         } while (Process32NextW(snap, &entry));
     }
     CloseHandle(snap);
-    return pid;
+}
+
+// Whether one specific PID is still running. The liveness check used to compare "the first process
+// with this name" against the target, which reports a perfectly healthy game as exited the moment a
+// second client turns up ahead of it in the snapshot.
+static bool ProcessIsAlive(DWORD pid) {
+    HANDLE proc = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!proc) return false;
+    const bool alive = WaitForSingleObject(proc, 0) == WAIT_TIMEOUT;
+    CloseHandle(proc);
+    return alive;
 }
 
 // Returns true if the named module is loaded in the target process.
@@ -139,6 +155,11 @@ static bool Inject(DWORD pid, const std::wstring& dllPath) {
 }
 
 int wmain(int argc, wchar_t** argv) {
+    // Flush per insertion: to a console this costs nothing, but redirected to a file wcout is
+    // fully buffered, so `Injector.exe > inject.log` stays empty until the process exits --
+    // and the runs worth reading (still waiting, still loading) are the ones still going.
+    std::wcout << std::unitbuf;
+
     std::wcout << L"Rec Room 2025 patch injector\n";
     std::wcout << L"----------------------------\n";
 
@@ -167,43 +188,85 @@ int wmain(int argc, wchar_t** argv) {
     dllPath = fullDll;
     std::wcout << L"[*] Patch DLL: " << dllPath << L"\n";
 
-    // Wait for the game process.
-    std::wcout << L"[*] Waiting for " << kProcessName << L" (launch Rec Room now)...\n";
-    DWORD pid = 0;
-    while ((pid = FindProcessId(kProcessName)) == 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-    std::wcout << L"[+] Found game, PID " << pid << L"\n";
+    const std::wstring dllName = dllPath.substr(dllPath.find_last_of(L"\\/") + 1);
 
-    // Bail early if the patch is already loaded so we never double-inject
-    // (that would apply every hook twice and crash the game).
-    std::wstring dllName = dllPath.substr(dllPath.find_last_of(L"\\/") + 1);
-    if (ProcessHasModule(pid, dllName.c_str())) {
-        std::wcout << L"[=] " << dllName << L" is already loaded. Nothing to do.\n";
-        std::this_thread::sleep_for(kExitDelay);
-        return 0;
-    }
+    // Only one injector may travel from "this process is unpatched" to "injected". Two launchers
+    // started together means two injectors racing over the same new process: both would look, both
+    // would see no patch, and both would attach -- the double-inject that installs every hook twice
+    // and crashes the game. The loser re-checks under the mutex, finds the DLL already there, and
+    // goes back to looking for another instance. Local\ (per-session) is enough -- the game and its
+    // injector are always the same logon session -- and it needs no privileges, unlike Global\.
+    HANDLE gate = CreateMutexW(nullptr, FALSE, L"Local\\RecRoom2025PatchInjector");
 
-    // Wait for the game to finish loading the modules the patch depends on.
-    std::wcout << L"[*] Waiting for the game to finish loading...\n";
-    while (!AllRequiredModulesLoaded(pid)) {
-        // If the game closes while we wait, stop.
-        if (FindProcessId(kProcessName) != pid) {
-            std::wcout << L"[!] Game process exited before it finished loading.\n";
+    std::wcout << L"[*] Waiting for an unpatched " << kProcessName << L" (launch Rec Room now)...\n";
+
+    int reported = -1;   // last "already patched" count printed, so the window doesn't scroll
+    for (;;) {
+        // Pick a target: the first instance that does NOT already have the patch loaded. Skipping
+        // the patched ones is still the double-inject guard, but it is now a per-process skip rather
+        // than a reason to give up. The old code took the first PID with a matching name and exited
+        // if that one was patched -- which made a second client impossible to patch, because the
+        // injector kept finding the client that was already running, reported "nothing to do", and
+        // left the newly launched one running against the dead official backend.
+        DWORD pid = 0;
+        int patched = 0;
+        for (;;) {
+            std::vector<DWORD> pids;
+            FindProcessIds(kProcessName, pids);
+
+            patched = 0;
+            for (DWORD candidate : pids) {
+                if (ProcessHasModule(candidate, dllName.c_str())) ++patched;
+                else if (pid == 0) pid = candidate;
+            }
+            if (pid != 0) break;
+
+            // Only speak up when the count changes, so an idle wait doesn't scroll the window.
+            if (patched != reported) {
+                reported = patched;
+                if (patched > 0) {
+                    std::wcout << L"[=] " << patched << L" instance(s) already patched; waiting for a new one.\n";
+                    std::wcout << L"    (close this window if you didn't mean to launch another client)\n";
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+
+        std::wcout << L"[+] Found unpatched game, PID " << pid;
+        if (patched > 0) std::wcout << L" (" << patched << L" other instance(s) already patched)";
+        std::wcout << L"\n";
+
+        // Wait for the game to finish loading the modules the patch depends on.
+        std::wcout << L"[*] Waiting for the game to finish loading...\n";
+        while (!AllRequiredModulesLoaded(pid)) {
+            // If the game closes while we wait, stop.
+            if (!ProcessIsAlive(pid)) {
+                std::wcout << L"[!] Game process exited before it finished loading.\n";
+                return 1;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        // Small settle delay so the modules are fully initialized, not just mapped.
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+
+        std::wcout << L"[*] Injecting...\n";
+        if (gate) WaitForSingleObject(gate, INFINITE);
+        const bool taken = ProcessHasModule(pid, dllName.c_str());
+        const bool ok = !taken && Inject(pid, dllPath);
+        if (gate) ReleaseMutex(gate);
+
+        if (taken) {
+            std::wcout << L"[=] PID " << pid << L" was patched by another injector; looking for another instance.\n";
+            continue;
+        }
+        if (!ok) {
+            // Only stall on failure, so the reason stays on screen.
+            std::wcout << L"[!] Injection failed. See messages above.\n";
+            std::wcout << L"\nPress Enter to exit...";
+            std::wcin.get();
             return 1;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-    // Small settle delay so the modules are fully initialized, not just mapped.
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-
-    std::wcout << L"[*] Injecting...\n";
-    if (!Inject(pid, dllPath)) {
-        // Only stall on failure, so the reason stays on screen.
-        std::wcout << L"[!] Injection failed. See messages above.\n";
-        std::wcout << L"\nPress Enter to exit...";
-        std::wcin.get();
-        return 1;
+        break;
     }
 
     std::wcout << L"[+] Done. The patch is loaded.\n";

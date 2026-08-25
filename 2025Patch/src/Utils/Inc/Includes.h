@@ -6,12 +6,14 @@
 #include <tlhelp32.h>
 #include <cstdio>
 #include <cstdarg>
+#include <share.h>
 #include <new>
 #include <string>
 
 // File logger, in addition to the AllocConsole stdout. The console window steals focus from the game
 // (Unity pauses when unfocused) and can't be captured after the fact; a flushed log file survives a
-// crash and can be read on any machine. Writes next to the game exe as 2025patch.log.
+// crash and can be read on any machine. Writes next to the game exe as 2025patch.log -- or, for a
+// second client running side by side, 2025patch.<pid>.log (see below).
 inline void PatchLog(const char* fmt, ...) {
 	static FILE* lf = nullptr;
 	if (!lf) {
@@ -19,7 +21,17 @@ inline void PatchLog(const char* fmt, ...) {
 		GetModuleFileNameA(nullptr, path, MAX_PATH);      // the game exe (Recroom_Release.exe)
 		char* slash = strrchr(path, '\\');
 		if (slash) strcpy_s(slash + 1, MAX_PATH - (slash + 1 - path), "2025patch.log");
-		fopen_s(&lf, path, "w");
+		// _SH_DENYWR so a SECOND patched client can't open this same file for writing: both would
+		// truncate it and then write at their own independent offsets, shredding the log of whichever
+		// got there first. The one that loses falls back to 2025patch.<pid>.log, so the plain name
+		// always belongs to the first instance -- the one every other note here tells you to read --
+		// and only writing is denied, so tailing or opening it in an editor still works.
+		lf = _fsopen(path, "w", _SH_DENYWR);
+		if (!lf) {
+			char* dot = strrchr(path, '.');
+			if (dot) sprintf_s(dot, sizeof(path) - (dot - path), ".%lu.log", GetCurrentProcessId());
+			lf = _fsopen(path, "w", _SH_DENYWR);
+		}
 		if (!lf) return;
 	}
 	// Timestamp every line. Unity's Player.log is timestamped, and the interesting failures span both

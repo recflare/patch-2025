@@ -8,7 +8,9 @@ rem
 rem The injector starts first on purpose: it waits for Recroom_Release.exe, then
 rem until both GameAssembly.dll and Referee.dll are loaded, and only then attaches
 rem (attaching earlier crashes -- the patch resolves against both at attach time).
-rem It refuses to double-inject, so running this again while the game runs is safe.
+rem It skips instances that already carry the patch, so running this again while the
+rem game runs is safe -- and if you want a SECOND client, just run this again: the
+rem injector patches the newly launched one instead of stopping at the running one.
 rem
 rem The patch has no console window by default: Unity throttles hard whenever the
 rem game loses focus, which measurably hurts room-load times. Confirm it attached

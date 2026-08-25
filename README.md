@@ -19,8 +19,13 @@ waits for `Recroom_Release.exe` and for `GameAssembly.dll` + `Referee.dll` to lo
 relative to themselves, so they only work from the game folder, and both refuse to do anything if
 `Injector.exe` or `Recroom_Release.exe` is not sitting next to them.
 
-Injecting by hand works the same way: start `Injector.exe`, then the game. The injector will not
-double-inject, so re-running a launcher against a running game is a no-op.
+Injecting by hand works the same way: start `Injector.exe`, then the game. Each injector patches
+one client: it skips instances that already carry the patch, so re-running a launcher against a
+running game is a no-op -- but launching a **second client** gets patched normally rather than
+refused. Run a launcher again for each extra client you want.
+
+Only the first client writes `2025patch.log`; the others log to `2025patch.<pid>.log` beside it, so
+two sessions never shred each other's log.
 
 There is no console window by default (Unity throttles the game whenever it loses focus, which
 costs real room-load time) -- check `2025patch.log` in the game folder to confirm the patch

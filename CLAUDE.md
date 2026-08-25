@@ -56,10 +56,21 @@ There is no test suite and no linter — verification is empirical: run the game
 
 ### Boot sequence
 
-`Injector/injector.cpp` waits for `Recroom_Release.exe`, then waits until **both**
-`GameAssembly.dll` and `Referee.dll` are in its module list (the patch resolves against both at
-attach time and would crash if injected earlier), settles 2s, then `CreateRemoteThread` +
-`LoadLibraryW`. It refuses to double-inject — a second attach installs every hook twice and crashes.
+`Injector/injector.cpp` waits for an **unpatched** `Recroom_Release.exe`, then waits until **both**
+`GameAssembly.dll` and `Referee.dll` are in that process's module list (the patch resolves against
+both at attach time and would crash if injected earlier), settles 2s, then `CreateRemoteThread` +
+`LoadLibraryW`.
+
+It still never double-injects — a second attach installs every hook twice and crashes — but that
+guard is **per process** rather than a reason to stop: an instance whose module list already contains
+`2025Patch.dll` is skipped and the search continues, which is what makes **two clients side by side**
+work (one injector each). The earlier version took the first PID matching the name and exited
+"nothing to do" if that one was patched, so a second client launched next to a running one silently
+went unpatched. Two injectors racing over the same new process would both see it unpatched and both
+attach, so the look-then-inject step is serialized through a `Local\RecRoom2025PatchInjector` mutex
+and the loser resumes searching. Liveness is checked per PID (`OpenProcess`/`WaitForSingleObject`)
+for the same reason — comparing against "the first process with this name" reports a healthy target
+as exited as soon as another instance appears ahead of it.
 
 `DllMain` (`2025Patch/src/main.cpp`) then calls `RR::Patches::Resolve()` followed by
 `RR::Patches::Patch()`, both in `2025Patch/src/RR/Patching/Patches.h`.
@@ -156,7 +167,10 @@ whether the hook is masking a different fault. Keep that pattern for new forcing
 
 `PatchLog` (`Utils/Inc/Includes.h`) writes timestamped, per-line-flushed output to `2025patch.log`
 **next to the game exe** — it survives a crash and correlates with Unity's `Player.log` by
-timestamp. The AllocConsole path is off by default (`EnableConsole` in `2025patch.ini`): the console
+timestamp. The file is opened `_SH_DENYWR`, so with two clients running only the first gets that name
+and the others fall back to `2025patch.<pid>.log`; otherwise both would truncate it and then write at
+independent offsets, interleaving the two logs into nonsense. Only writing is denied — tailing the
+live log still works. The AllocConsole path is off by default (`EnableConsole` in `2025patch.ini`): the console
 steals foreground focus and Unity throttles hard when unfocused, which measurably wrecked room-load
 times. `std::cout` calls therefore go nowhere; every one of them is mirrored by a `PatchLog` line,
 and new diagnostics should use `PatchLog`.
