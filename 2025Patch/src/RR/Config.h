@@ -62,6 +62,22 @@ namespace RR::Config {
 	// fast response stops the retries -- stub it server-side and drop it from the list instead.
 	bool BlockDeadHosts = true;
 
+	// VOICE (Tachyon) RSA PUBLIC KEY -- .NET <RSAKeyValue> XML, on ONE line.
+	//
+	// EMPTY IS THE OFF SWITCH: leave it blank and the client keeps Rec Room's baked-in key, exactly
+	// as before. Set it to your own key pair's PUBLIC half and the voice server can decrypt the
+	// handshake: RSA/PKCS#1 v1.5 unwrap CKA -> 32-byte AES key and CIA -> 16-byte IV, then
+	// AES-256-CBC/PKCS7 decrypt AT to {"accountId","environment","accessToken"} and authenticate it.
+	// (The client calls Encrypt(data, fOAEP: false), so the server must use PKCS#1 v1.5, not OAEP.)
+	//
+	// Any key size works -- the client only encrypts, so a 2048-bit key just makes CKA/CIA/VB 256
+	// bytes instead of 128. Safe to paste RSA.ToXmlString(false) output verbatim.
+	//
+	// Self-test: VB is a fixed 16-byte constant encrypted with this same key, so after a swap it must
+	// decrypt to 19 32 C5 68 80 28 9E 22 CA A8 71 09 14 88 5C 1B. If it does, the client is using
+	// your key and AT is trustworthy; if it does not, the swap did not take.
+	char VoiceKeyXml[2048] = "";
+
 	// Diagnostic tracing: the request-pump probes ([Pump]/[Send]), Photon operation/status/event
 	// tracers, HttpClient path logger and BestHTTP response logger. Off by default -- they are chatty
 	// and every question they were built to answer is now recorded in CLAUDE.md and in the comment
@@ -143,6 +159,42 @@ namespace RR::Config {
 			return;
 		}
 		strcpy_s(value, cch, buf);
+	}
+
+	// Raw multi-hundred-char value (the RSA XML). Deliberately NOT SanitizeHost'd -- it is not a host
+	// and contains '/' and '+' from base64. Only trimmed, length-checked, and shape-checked.
+	//
+	// The shape check is load-bearing rather than cosmetic: a malformed value would not fail here, it
+	// would fail inside the game's own FromXmlString as a MANAGED exception thrown from a method we
+	// hooked, and this project has already been bitten once by a managed exception unwinding through
+	// a spoofed return address (STATUS_INVALID_DISPOSITION, see SendRequest_H). Rejecting obvious
+	// garbage up front keeps a typo in an ini file from being a crash.
+	static void ReadVoiceKey(const char* path, char* value, size_t cch) {
+		char* buf = new (std::nothrow) char[4096];
+		if (!buf) return;
+		buf[0] = 0;
+		GetPrivateProfileStringA(kSection, "VoiceKeyXml", "", buf, 4096, path);
+		Trim(buf);
+		if (!*buf) { delete[] buf; return; }           // absent/blank == keep Rec Room's key
+		if (strlen(buf) >= cch) {
+			PatchLog("[Config] VoiceKeyXml is too long (%zu chars, max %zu), keeping Rec Room's key",
+				strlen(buf), cch - 1);
+			delete[] buf;
+			return;
+		}
+		if (!strstr(buf, "<RSAKeyValue>") || !strstr(buf, "<Modulus>") || !strstr(buf, "<Exponent>")) {
+			PatchLog("[Config] VoiceKeyXml is not <RSAKeyValue> XML, keeping Rec Room's key");
+			delete[] buf;
+			return;
+		}
+		// A PRIVATE key would work too, but shipping one to every client is a mistake worth catching.
+		if (strstr(buf, "<D>") || strstr(buf, "<InverseQ>")) {
+			PatchLog("[Config] VoiceKeyXml contains PRIVATE key material -- refusing; use the public half only");
+			delete[] buf;
+			return;
+		}
+		strcpy_s(value, cch, buf);
+		delete[] buf;
 	}
 
 	static void ReadBool(const char* path, const char* key, bool& value) {
@@ -231,11 +283,14 @@ namespace RR::Config {
 		ReadBool(path, "BlockDeadHosts", BlockDeadHosts);
 		ReadBool(path, "EnableTracing",  EnableTracing);
 		ReadPort(path, "PhotonPort",     PhotonPort);
+		ReadVoiceKey(path, VoiceKeyXml, sizeof(VoiceKeyXml));
 
 		PatchLog("[Config] %s", path);
 		PatchLog("[Config] ApiHost=%s PhotonHost=%s PhotonPort=%d EnableConsole=%s BlockDeadHosts=%s EnableTracing=%s",
 			ApiHost, *PhotonHost ? PhotonHost : "(none -- Photon untouched)", PhotonPort,
 			EnableConsole ? "true" : "false", BlockDeadHosts ? "true" : "false",
 			EnableTracing ? "true" : "false");
+		PatchLog("[Config] VoiceKeyXml=%s",
+			*VoiceKeyXml ? "(set -- voice handshake re-keyed)" : "(none -- Rec Room's key kept)");
 	}
 }

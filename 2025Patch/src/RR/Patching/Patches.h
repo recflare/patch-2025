@@ -742,6 +742,78 @@ namespace RR::Methods::Photon {
 	uintptr_t Protocol18_DeserializeEventData = 0x753E2F0;
 }
 
+// =================================================================================================
+// VOICE HANDSHAKE RE-KEY -- give the voice server a key it can actually decrypt with.
+//
+// TachyonClient's connect payload is {AI, AT, VB, CKA, CIA, CPK}. Only AI (the account id) is
+// plaintext, and it is client-asserted, so a self-hosted voice server has nothing it can trust: AT
+// (the Photon auth blob, which carries accountId/environment/accessToken) is AES-encrypted, and the
+// AES key and IV travel as CKA/CIA RSA-encrypted to a public key baked into the client. Reading any
+// of it needs Rec Room's private key.
+//
+// Swapping that public key for one of ours fixes it in a single field write. The ctor reads the XML
+// from DMIBBCKIGCG's statics immediately before calling rsa.FromXmlString (see Methods.h), so we
+// overwrite the static and let the game do the import itself -- deliberately, because the
+// alternative (calling FromXmlString ourselves) would put a managed method that CAN THROW behind a
+// spoofed return address, which is exactly the crash SendRequest_H documents.
+//
+// Ordering is the whole trick. The ctor runs DMIBBCKIGCG's .cctor a few instructions before it reads
+// the static (cctor check at 0x82796C3), and that .cctor is what installs the stock key -- so a
+// naive write before the original would simply be overwritten. Forcing the class init ourselves
+// first means the game's own check finds it already initialised, skips it, and reads our value.
+//
+// Off unless VoiceKeyXml is set in 2025patch.ini, and every failure path leaves Rec Room's key in
+// place, so the worst case is voice exactly as it behaved before.
+// =================================================================================================
+void (*TachyonCtor_O)(void*, void*);
+
+static void ApplyVoiceKey() {
+	__try {
+		auto klass = *reinterpret_cast<uint8_t**>(GA + RR::Offsets::Tachyon::KeyHolderTypeInfo);
+		// The slot holds an encoded metadata index until il2cpp resolves it; by the time a
+		// TachyonClient is constructed it is a real pointer, but check rather than trust.
+		if (reinterpret_cast<uintptr_t>(klass) < 0x10000) {
+			PatchLog("[Voice] key holder not resolved yet (slot=%p) -- Rec Room's key kept", klass);
+			return;
+		}
+
+		using ClassInitFn = void (*)(void*);
+		auto init = reinterpret_cast<ClassInitFn>(GA + RR::Methods::Il2cpp::il2cpp_runtime_class_init);
+		spoof_call(RetAddr, init, reinterpret_cast<void*>(klass));
+
+		auto statics = read<uint8_t*>(klass, RR::Offsets::Tachyon::Class_StaticFields);
+		if (!statics) {
+			PatchLog("[Voice] key holder has no static block -- Rec Room's key kept");
+			return;
+		}
+
+		using Il2cppStringNewFn = Il2cppString * (*)(const char*);
+		auto mk = reinterpret_cast<Il2cppStringNewFn>(GA + RR::Methods::Il2cpp::il2cpp_string_new);
+		Il2cppString* xml = spoof_call(RetAddr, mk, static_cast<const char*>(RR::Config::VoiceKeyXml));
+		if (!xml) {
+			PatchLog("[Voice] il2cpp_string_new failed -- Rec Room's key kept");
+			return;
+		}
+
+		set<void*>(statics, RR::Offsets::Tachyon::Static_ServerKeyXml, xml);
+		PatchLog("[Voice] handshake re-keyed from VoiceKeyXml (%zu chars) -- CKA/CIA/AT are now "
+			"decryptable with your private key", strlen(RR::Config::VoiceKeyXml));
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		PatchLog("[Voice] re-key FAILED (exception) -- Rec Room's key still in effect");
+	}
+}
+
+void TachyonCtor_H(void* self, void* deps) {
+	static bool s_logged = false;
+	if (*RR::Config::VoiceKeyXml) {
+		ApplyVoiceKey();
+	} else if (!s_logged) {
+		s_logged = true;
+		PatchLog("[Voice] VoiceKeyXml not set -- handshake stays on Rec Room's key (server cannot read AT)");
+	}
+	TachyonCtor_O(self, deps);
+}
+
 namespace RR::Patches {
 	void Resolve() {
 
@@ -751,13 +823,15 @@ namespace RR::Patches {
 		RR::Methods::Il2cpp::il2cpp_string_new = reinterpret_cast<uintptr_t>(spoof_call(RetAddr, GetProcAddress, assm, "il2cpp_string_new")) - GA;
 		RR::Methods::Il2cpp::il2cpp_object_get_class = reinterpret_cast<uintptr_t>(spoof_call(RetAddr, GetProcAddress, assm, "il2cpp_object_get_class")) - GA;
 		RR::Methods::Il2cpp::il2cpp_object_new = reinterpret_cast<uintptr_t>(spoof_call(RetAddr, GetProcAddress, assm, "il2cpp_object_new")) - GA;
+		RR::Methods::Il2cpp::il2cpp_runtime_class_init = reinterpret_cast<uintptr_t>(spoof_call(RetAddr, GetProcAddress, assm, "il2cpp_runtime_class_init")) - GA;
 
 		// To the log, not just the console -- the console is off by default now (see CreateConsole in
 		// main.cpp), and a zero here means an export failed to resolve, which is worth keeping.
-		PatchLog("[Resolve] il2cpp_string_new=0x%llX il2cpp_object_get_class=0x%llX il2cpp_object_new=0x%llX",
+		PatchLog("[Resolve] il2cpp_string_new=0x%llX il2cpp_object_get_class=0x%llX il2cpp_object_new=0x%llX il2cpp_runtime_class_init=0x%llX",
 			(unsigned long long)RR::Methods::Il2cpp::il2cpp_string_new,
 			(unsigned long long)RR::Methods::Il2cpp::il2cpp_object_get_class,
-			(unsigned long long)RR::Methods::Il2cpp::il2cpp_object_new);
+			(unsigned long long)RR::Methods::Il2cpp::il2cpp_object_new,
+			(unsigned long long)RR::Methods::Il2cpp::il2cpp_runtime_class_init);
 	}
 
 	void Patch() {
@@ -792,6 +866,13 @@ namespace RR::Patches {
 		// queued behind. Install BEFORE anything fetches an image.
 		MH_CreateHook((void*)(GA + RR::Methods::ImageSignature::Verify), &VerifyImageSig_H, (LPVOID*)&VerifyImageSig_O);
 		MH_EnableHook((void*)(GA + RR::Methods::ImageSignature::Verify));
+
+		// Voice handshake re-key. Always hooked (it is also the only place that logs which key the
+		// run used); the hook itself no-ops unless VoiceKeyXml is set. Must be in place before the
+		// first TachyonClient is constructed, which is why it goes in at patch time rather than
+		// lazily on the voice path.
+		MH_CreateHook((void*)(GA + RR::Methods::Tachyon::Ctor), &TachyonCtor_H, (LPVOID*)&TachyonCtor_O);
+		MH_EnableHook((void*)(GA + RR::Methods::Tachyon::Ctor));
 
 		// photon doesn't go through HTTPRequest, it resolves ns.photonengine.io etc. and connects over raw sockets,
 		// so redirect it at the winsock dns level instead

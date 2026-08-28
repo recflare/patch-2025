@@ -210,6 +210,7 @@ Read at attach by `RR::Config::Load()` (`2025Patch/src/RR/Config.h`), called fro
 | `EnableConsole` | `false` | AllocConsole debug window. Costs load time (focus theft → Unity throttling); everything it prints is already in `2025patch.log` |
 | `BlockDeadHosts` | `true` | `getaddrinfo` returns `WSAHOST_NOT_FOUND` for `IsDeadHost` matches. **Third-party hosts only** — rudderstack, backtrace, statsig, `cloud.unity3d.com`. Most are still *live*, so this keeps an archival session's telemetry and crash dumps off unrelated companies' servers — but the backtrace entry is load-bearing: its upload backlog is what disconnects Photon. Never list a `*.recflare.net` host: see the serial-queue warning above |
 | `EnableTracing` | `false` | Installs the diagnostic hooks ([Pump]/[Send] queue probes, Photon operation/status/event tracers, HttpClient paths, BestHTTP responses) and un-quiets `SendRequest`'s per-request lines. Off = none of them are hooked at all |
+| `VoiceKeyXml` | *(empty)* | RSA **public** key (`<RSAKeyValue>` XML, one line) that the Tachyon voice handshake is encrypted to. Empty = keep Rec Room's baked-in key. Set it to your own and the voice server can decrypt the handshake — see *Voice handshake re-key* below |
 
 The file is created with these defaults on first run if absent, and never overwritten afterwards.
 A byte-identical copy lives at the repo root as `2025patch.ini` and is staged into `x64/Release/` by
@@ -246,6 +247,61 @@ Not configurable: the host being *matched* (`ns.rec.net`) and the Photon-name su
 all. `PatchLog` is file-based, so the `[Config]` lines are recorded either way.
 
 Nothing is compile-time any more; every knob lives in the ini.
+
+## Voice handshake re-key (`VoiceKeyXml`)
+
+TachyonClient's connect payload is a JSON blob `{AI, AT, VB, CKA, CIA, CPK}` — the NGO
+`ConnectionRequestMessage.ConnectionData`. Only `AI` (the account id, decimal string) is plaintext,
+and it is **client-asserted**, so a self-hosted voice server has nothing it can trust:
+
+| field | contents |
+| --- | --- |
+| `AI` | account id (plaintext) |
+| `AT` | `AES(UTF8({"accountId","environment","accessToken"}))` — the RecNet access token lives here |
+| `VB` | `RSA(base64decode("GTLFaIAoniLKqHEJFIhcGw=="))`, a fixed 16-byte constant |
+| `CKA` / `CIA` | `RSA(aes.Key)` / `RSA(aes.IV)` — freshly generated per connection |
+| `CPK` | `AES(client RSA CspBlob)` |
+
+The RSA is a public key baked into the client, so `AT` is unreadable without Rec Room's private key.
+`VoiceKeyXml` swaps that public key for one of yours, which makes the whole payload decryptable and
+lets the server authenticate the `accessToken` (and bind the otherwise-unauthenticated `AI` to it).
+
+**How it works.** `TachyonCtor_H` hooks `BAOFAOBLAMJ..ctor` (`0x82795E0`) and, before forwarding,
+overwrites `DMIBBCKIGCG`'s static `KBANIKNNKKD` (statics `+0x08`) — the `<RSAKeyValue>` XML string
+the ctor reads two instructions before calling `rsa.FromXmlString`. **The game performs the import
+itself**; we deliberately do not call `FromXmlString`, because that is a managed method that can
+throw, and a managed exception unwinding through a spoofed return address is the
+`STATUS_INVALID_DISPOSITION` crash documented on `SendRequest_H`.
+
+Ordering is the whole trick: the ctor runs `DMIBBCKIGCG`'s `.cctor` a few instructions *before* it
+reads the static, and that `.cctor` is what installs the stock key — so a naive write would just be
+overwritten. `ApplyVoiceKey` calls `il2cpp_runtime_class_init` first, so the game's own check finds
+the class already initialised, skips it, and reads our value.
+
+**Server side.** The client calls `Encrypt(data, fOAEP: false)`, so decrypt with **PKCS#1 v1.5, not
+OAEP**; the symmetric layer is `AesCryptoServiceProvider` defaults = **AES-256-CBC / PKCS7**. Unwrap
+`CKA` → 32-byte key and `CIA` → 16-byte IV, then decrypt `AT`. Key size is free — the client only
+encrypts, so a 2048-bit key just makes `CKA`/`CIA`/`VB` 256 bytes.
+
+**Self-test.** `VB` is that fixed constant encrypted with the same key, so after a swap it must
+decrypt to `19 32 C5 68 80 28 9E 22 CA A8 71 09 14 88 5C 1B`. If it does, the client is on your key
+and `AT` is trustworthy; if it does not, the swap did not take.
+
+Generate a pair with:
+
+```powershell
+$r = [System.Security.Cryptography.RSA]::Create(2048)
+$r.ToXmlString($false) | Set-Content pub.xml   # -> VoiceKeyXml (one line)
+$r.ToXmlString($true)  | Set-Content priv.xml  # -> voice server ONLY, never ship this
+```
+
+`ReadVoiceKey` rejects anything that is not `<RSAKeyValue>`/`<Modulus>`/`<Exponent>` XML, and
+refuses a value containing `<D>`/`<InverseQ>` — shipping the private half to every client would
+defeat the point. Every failure path logs and keeps Rec Room's key, so the worst case is voice
+behaving exactly as it did before.
+
+⚠️ `DMIBBCKIGCG.NDEDJKDIGGM()` / `CKAAEJMIMEF()` look like the getters for these statics but have
+**zero callers** — the ctor reads the field directly. Do not hook them.
 
 ## When the client exits on its own, suspect CheatManager first
 

@@ -181,4 +181,39 @@ namespace RR::Methods::Il2cpp {
 	uintptr_t il2cpp_string_new;
 	uintptr_t il2cpp_object_get_class;
 	uintptr_t il2cpp_object_new;
+	// Runs a class's static constructor if it has not run yet -- the same thing the generated code
+	// does inline (`cmp dword ptr [klass+0xE8], 0` / call the init thunk) before touching statics.
+	// Needed because we write a static field of DMIBBCKIGCG, and its .cctor is what puts the stock
+	// value there: writing first and letting the cctor run afterwards would just undo us.
+	uintptr_t il2cpp_runtime_class_init;
+}
+
+// TACHYON VOICE -- the RSA public key the voice handshake is encrypted to.
+//
+// TachyonClient (BAOFAOBLAMJ) hands the voice server a JSON blob {AI, AT, VB, CKA, CIA, CPK}: AT is
+// the Photon auth payload AES-encrypted, and CKA/CIA are that AES key and IV RSA-encrypted to a
+// public key baked into the client. A self-hosted voice server therefore cannot read ANY of it --
+// decrypting CKA/CIA needs Rec Room's private key, which is what makes AT unauthenticatable.
+//
+// The key enters at exactly one place. BAOFAOBLAMJ..ctor:
+//     0x82796A3  new RSACryptoServiceProvider()          -> this.KODJDHFMKAC (+0x40)
+//     0x8279726  rdx = DMIBBCKIGCG::statics[+0x08]       -> the <RSAKeyValue> XML string
+//     0x827972A  call [klass+0x200]                      -> rsa.FromXmlString(rdx)  (virtual)
+// and the XML literal (0xD106B70, 243 chars) is referenced ONLY by DMIBBCKIGCG..cctor (0x827A820),
+// which stores it to that static. So swapping the static before the ctor reads it swaps the key for
+// the whole process -- and the game performs the FromXmlString itself, so we never have to make a
+// managed call that could throw back through a spoofed return address.
+//
+// ⚠️ DMIBBCKIGCG.NDEDJKDIGGM()/CKAAEJMIMEF() LOOK like the getters for these statics but have zero
+// callers -- the ctor reads the field directly. Do not hook them.
+namespace RR::Methods::Tachyon {
+	uintptr_t Ctor = 0x82795E0;  // BAOFAOBLAMJ..ctor(BAAIILIKHPH)
+}
+
+namespace RR::Offsets::Tachyon {
+	// Metadata-usage slot holding Il2CppClass* for DMIBBCKIGCG (the key/constant holder). Taken from
+	// the ctor's own `mov rax, [rip+0x4F303E6]` at 0x827970B, so it is the same pointer the game uses.
+	constexpr uintptr_t KeyHolderTypeInfo  = 0xD1A9AF8;
+	constexpr int       Class_StaticFields = 0x90;  // Il2CppClass -> static field block
+	constexpr int       Static_ServerKeyXml = 0x08; // DMIBBCKIGCG.KBANIKNNKKD (the <RSAKeyValue> XML)
 }
