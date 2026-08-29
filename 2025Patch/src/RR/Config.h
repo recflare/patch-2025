@@ -7,24 +7,33 @@
 //
 // The mirror hosts and the Photon backend selection used to be literals/constexpr in Patches.h, so
 // pointing the patch at a different backend -- or A/B-ing against Photon Cloud -- meant a rebuild.
-// They are read here instead, once, at DLL attach.
+// They are read here instead, once, at DLL attach. NO BACKEND IS COMPILED IN: both host values
+// start empty, so whichever server this patch talks to comes from the ini and nowhere else.
 //
 // INI + GetPrivateProfileString is deliberate: it is a Win32 API, so there is no parser to write and
 // no dependency to add, and the file stays hand-editable next to the exe. If the file is missing it
 // is created with the defaults below, so the knobs are discoverable without reading the source.
 //
 // Everything is best-effort -- a missing file, an unreadable one, or a malformed value all fall back
-// to the compiled-in default rather than leaving an empty host or a nonsense port. Whatever is
-// finally in effect is logged, so 2025patch.log always says which backend the run actually used.
+// to the compiled-in default rather than a nonsense port. For the two hosts that default is "unset",
+// i.e. leave that piece of the client alone. Whatever is finally in effect is logged, so
+// 2025patch.log always says which backend the run actually used.
 // =================================================================================================
 namespace RR::Config {
 
 	constexpr const char* kFileName = "2025patch.ini";
 	constexpr const char* kSection  = "config";
 
-	// --- Defaults: the recflare mirror, self-hosted Photon. In effect when there is no ini/value. ---
+	// --- Defaults. Both hosts default to EMPTY: there is no compiled-in backend, so a build with no
+	// ini (or with these keys blank) patches nothing network-wise and the client talks to whatever
+	// its own URLs point at. Pointing it at a mirror is entirely a matter of filling these in. ---
 
-	char ApiHost[128] = "ns.recflare.net";  // replaces ns.rec.net in BestHTTP request URIs
+	// Replaces ns.rec.net in BestHTTP request URIs.
+	//
+	// EMPTY IS THE OFF SWITCH: blank and SendRequest_H leaves every URI exactly as the game built it.
+	// The host being REPLACED (ns.rec.net) is the dead official one and stays a literal in Patches.h;
+	// only the replacement is configurable.
+	char ApiHost[128] = "";
 
 	// getaddrinfo target for *.photonengine / exitgames / photonindustries.
 	//
@@ -34,7 +43,7 @@ namespace RR::Config {
 	// its Photon app ids from an endpoint on the server rather than from AppSettings (see the PHOTON
 	// BACKEND SELECTION block in Patches.h), so pointing it at a different Photon deployment is
 	// purely a matter of swapping the server -- which is exactly what this one value does.
-	char PhotonHost[128] = "photon.recflare.net";
+	char PhotonHost[128] = "";
 
 	// Requires PhotonHost. 0 = leave whatever the server/client supplied. This is the port of the
 	// INITIAL connect (name server / master); the master still hands out its own game-server ports.
@@ -117,45 +126,34 @@ namespace RR::Config {
 		return *s != '\0';
 	}
 
-	// Current value doubles as the default, so an absent key always keeps it. The length check is
-	// not cosmetic: buf is wider than the destinations, and strcpy_s ABORTS the process on overflow
-	// rather than truncating, so an over-long value has to be rejected like any other bad input.
-	static void ReadHost(const char* path, const char* key, char* value, size_t cch) {
+	// EMPTY IS MEANINGFUL for both hosts -- each is the master switch for its own rewrite -- so
+	// "ApiHost=" / "PhotonHost=" must CLEAR the value rather than keep it, and `offMeans` says in the
+	// log what that switches off. The three cases are distinct on purpose: an absent key keeps the
+	// current value (GetPrivateProfileString hands back the default we pass in, which is empty unless
+	// something already set it), a blank one is an explicit opt-out, and a value that is present and
+	// non-blank but sanitizes to nothing ("https://") is malformed input, not an opt-out, so it keeps
+	// the current value too.
+	//
+	// The length check is not cosmetic: buf is wider than the destinations, and strcpy_s ABORTS the
+	// process on overflow rather than truncating, so an over-long value has to be rejected like any
+	// other bad input.
+	static void ReadHost(const char* path, const char* key, char* value, size_t cch, const char* offMeans) {
 		char buf[256] = {};
 		GetPrivateProfileStringA(kSection, key, value, buf, (DWORD)sizeof(buf), path);
-		if (!SanitizeHost(buf)) {
-			PatchLog("[Config] %s is blank/invalid, keeping default %s", key, value);
-			return;
-		}
-		if (strlen(buf) >= cch) {
-			PatchLog("[Config] %s is too long (%zu chars), keeping default %s", key, strlen(buf), value);
-			return;
-		}
-		strcpy_s(value, cch, buf);
-	}
-
-	// PhotonHost is the one host where EMPTY IS MEANINGFUL: it is the master switch for the Photon
-	// swap, so "PhotonHost=" must CLEAR the default rather than keep it. The three cases are distinct
-	// on purpose -- the key being absent still keeps the default (GetPrivateProfileString hands back
-	// the default we pass in), while a value that is present but non-blank and still sanitizes to
-	// nothing ("https://") is malformed input, not an opt-out, and keeps the default too.
-	static void ReadPhotonHost(const char* path, char* value, size_t cch) {
-		char buf[256] = {};
-		GetPrivateProfileStringA(kSection, "PhotonHost", value, buf, (DWORD)sizeof(buf), path);
 		char raw[256] = {};
 		strcpy_s(raw, buf);
 		Trim(raw);
 		if (!*raw) {
-			PatchLog("[Config] PhotonHost is empty -- leaving Photon untouched");
+			PatchLog("[Config] %s is empty -- %s", key, offMeans);
 			*value = '\0';
 			return;
 		}
 		if (!SanitizeHost(buf)) {
-			PatchLog("[Config] PhotonHost is invalid, keeping default %s", value);
+			PatchLog("[Config] %s is invalid, keeping %s", key, *value ? value : "(unset)");
 			return;
 		}
 		if (strlen(buf) >= cch) {
-			PatchLog("[Config] PhotonHost is too long (%zu chars), keeping default %s", strlen(buf), value);
+			PatchLog("[Config] %s is too long (%zu chars), keeping %s", key, strlen(buf), *value ? value : "(unset)");
 			return;
 		}
 		strcpy_s(value, cch, buf);
@@ -228,12 +226,14 @@ namespace RR::Config {
 		if (!f) return;
 		fprintf(f,
 			"; Rec Room 2025 patch configuration. Applied at injection.\n"
-			"; Delete a line (or the whole file) to fall back to the built-in defaults.\n"
+			"; Delete a line (or the whole file) to fall back to the built-in defaults. No backend is\n"
+			"; baked in: leave both hosts blank and the patch makes no network changes at all.\n"
 			"\n"
 			"[%s]\n"
 			"\n"
 			"; Backend hosts. Bare host names -- no scheme, no path.\n"
-			"; ApiHost rewrites ns.rec.net in the game's API requests.\n"
+			"; ApiHost rewrites ns.rec.net in the game's API requests. Leave it EMPTY to leave every\n"
+			"; request URI exactly as the game built it.\n"
 			"ApiHost=%s\n"
 			"\n"
 			"; PhotonHost is the DNS target for Photon (*.photonengine / exitgames / photonindustries).\n"
@@ -277,8 +277,8 @@ namespace RR::Config {
 		GetPrivateProfileStringA("hosts", "ApiHost", "", legacy, (DWORD)sizeof(legacy), path);
 		if (*legacy) PatchLog("[Config] ignoring legacy [hosts] section -- rename it to [%s]", kSection);
 
-		ReadHost(path, "ApiHost", ApiHost, sizeof(ApiHost));
-		ReadPhotonHost(path, PhotonHost, sizeof(PhotonHost));
+		ReadHost(path, "ApiHost", ApiHost, sizeof(ApiHost), "leaving request URIs untouched");
+		ReadHost(path, "PhotonHost", PhotonHost, sizeof(PhotonHost), "leaving Photon untouched");
 		ReadBool(path, "EnableConsole",  EnableConsole);
 		ReadBool(path, "BlockDeadHosts", BlockDeadHosts);
 		ReadBool(path, "EnableTracing",  EnableTracing);
@@ -287,7 +287,8 @@ namespace RR::Config {
 
 		PatchLog("[Config] %s", path);
 		PatchLog("[Config] ApiHost=%s PhotonHost=%s PhotonPort=%d EnableConsole=%s BlockDeadHosts=%s EnableTracing=%s",
-			ApiHost, *PhotonHost ? PhotonHost : "(none -- Photon untouched)", PhotonPort,
+			*ApiHost ? ApiHost : "(none -- URIs untouched)",
+			*PhotonHost ? PhotonHost : "(none -- Photon untouched)", PhotonPort,
 			EnableConsole ? "true" : "false", BlockDeadHosts ? "true" : "false",
 			EnableTracing ? "true" : "false");
 		PatchLog("[Config] VoiceKeyXml=%s",

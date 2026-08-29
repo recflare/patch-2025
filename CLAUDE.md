@@ -5,9 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 An archival patch for Rec Room build **19/07/25** (19 July 2025) that repoints the client from the
-dead official backend to a mirror (`recflare`): API host rewritten to `ns.recflare.net`, Photon
-redirected to `photon.recflare.net`, plus a self-contained Referee (anti-cheat/anti-debug) bypass.
-Ships as an injected DLL and a standalone injector.
+dead official backend to a mirror: the API host in request URIs is rewritten and Photon's DNS is
+redirected, both to hosts supplied at runtime by `2025patch.ini` (`ApiHost` / `PhotonHost`) — **no
+backend is compiled in, and both default to empty, i.e. off** — plus a self-contained Referee
+(anti-cheat/anti-debug) bypass. Ships as an injected DLL and a standalone injector.
 
 **Status: playable.** Boots, logs in, loads the dorm in ~5s, joins arbitrary rooms, and holds a
 session indefinitely. Getting there needed four fixes that are *not* obvious from the code alone —
@@ -95,8 +96,9 @@ mapping updated when adding an address, it is the only way back to the managed s
 
 This split is the single most load-bearing thing to know, and it is not visible from any one file:
 
-1. **BestHTTP** (`HTTPRequest.SendRequest`) — hooked and *rewritten*: `ns.rec.net` →
-   `ns.recflare.net`, by constructing a fresh `System.Uri` and storing it back into the request.
+1. **BestHTTP** (`HTTPRequest.SendRequest`) — hooked and *rewritten*: `ns.rec.net` → `ApiHost` from
+   the ini, by constructing a fresh `System.Uri` and storing it back into the request. With no
+   `ApiHost` set the hook still installs and logs, but performs no rewrite.
 2. **Photon** — does not use HTTP at all; it resolves `*.photonengine`/`exitgames`/
    `photonindustries` and connects over raw sockets. Redirected at the winsock layer by hooking
    `getaddrinfo` / `GetAddrInfoW` in `ws2_32`.
@@ -204,8 +206,8 @@ Read at attach by `RR::Config::Load()` (`2025Patch/src/RR/Config.h`), called fro
 
 | key | default | effect |
 | --- | --- | --- |
-| `ApiHost` | `ns.recflare.net` | replaces `ns.rec.net` in BestHTTP request URIs |
-| `PhotonHost` | `photon.recflare.net` | `getaddrinfo` target for `*.photonengine` / `exitgames` / `photonindustries`. **Empty = make no Photon changes at all** — no DNS redirect, no `AppSettings` write, `ConnectUsingSettings_H` not even hooked |
+| `ApiHost` | *(empty)* | host that replaces `ns.rec.net` in BestHTTP request URIs. **Empty = no rewrite at all** — every URI passes through as the game built it |
+| `PhotonHost` | *(empty)* | `getaddrinfo` target for `*.photonengine` / `exitgames` / `photonindustries`. **Empty = make no Photon changes at all** — no DNS redirect, no `AppSettings` write, `ConnectUsingSettings_H` not even hooked |
 | `PhotonPort` | `0` | requires `PhotonHost`; overrides `AppSettings.Port` for the initial connect. `0` = leave the supplied port |
 | `EnableConsole` | `false` | AllocConsole debug window. Costs load time (focus theft → Unity throttling); everything it prints is already in `2025patch.log` |
 | `BlockDeadHosts` | `true` | `getaddrinfo` returns `WSAHOST_NOT_FOUND` for `IsDeadHost` matches. **Third-party hosts only** — rudderstack, backtrace, statsig, `cloud.unity3d.com`. Most are still *live*, so this keeps an archival session's telemetry and crash dumps off unrelated companies' servers — but the backtrace entry is load-bearing: its upload backlog is what disconnects Photon. Never list a `*.recflare.net` host: see the serial-queue warning above |
@@ -219,15 +221,18 @@ DLL and injector — **when you change `WriteDefaultFile`, change that file too*
 
 Host values are sanitized to a bare host (scheme and path stripped) because `PhotonHost` is a
 `getaddrinfo` node name, not a URL. Malformed input never leaves the patch in a broken state: a
-blank `ApiHost`, a non-boolean flag, or an out-of-range port logs a line and keeps the default (a
-non-numeric port reads as `0`, i.e. "leave it alone"). Booleans accept `true/false`, `1/0`, `yes/no`,
-`on/off`. The effective set is logged as `[Config] ...`, plus `[Patch] API host=... Photon=...`.
+non-boolean flag or an out-of-range port logs a line and keeps the default (a non-numeric port reads
+as `0`, i.e. "leave it alone"). Booleans accept `true/false`, `1/0`, `yes/no`, `on/off`. The
+effective set is logged as `[Config] ...`, plus `[Patch] API host=... Photon=...`.
 
-`PhotonHost` is the exception, and `ReadPhotonHost` handles it separately: it is the master switch
-for the Photon swap, so an **explicitly blank** `PhotonHost=` clears the default instead of keeping
-it, and the patch then leaves Photon completely alone. The three cases are kept distinct on purpose —
-key absent keeps the default, present-and-blank disables, and present-but-unsanitizable (`https://`)
-is malformed input and keeps the default.
+**Neither host has a compiled-in value** — `ApiHost` and `PhotonHost` both start empty, so the
+backend this patch talks to comes from the ini and from nowhere else. Both go through the same
+`ReadHost`, and for both an empty value is the master switch for that rewrite: blank `ApiHost` means
+`SendRequest_H` leaves every URI as the game built it (the hook is still installed, it just does not
+rewrite), blank `PhotonHost` means no DNS redirect, no `AppSettings` write, and no
+`ConnectUsingSettings` hook. The three cases are kept distinct on purpose — key absent keeps the
+current value (empty unless something set it), present-and-blank explicitly clears, and
+present-but-unsanitizable (`https://`) is malformed input and keeps the current value.
 
 There is no app-id knob and no Cloud flag: this client takes its Realtime/Voice/Chat app ids from an
 endpoint on the server, not from `AppSettings`, so swapping the Photon server is the entire job.

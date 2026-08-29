@@ -41,10 +41,15 @@ If the file is absent the patch writes exactly this content itself on first run,
 the release is only there to make the knobs discoverable without launching first. An existing
 file is never overwritten; delete a key (or the whole file) to fall back to the default.
 
+No backend is compiled into the DLL: both hosts ship empty, so the server this patch talks to is
+whatever you put in `ApiHost` / `PhotonHost`. With neither set, no request is redirected — the
+Referee bypass and the rest of the patch still apply, the client just keeps talking to its own
+(dead) hosts.
+
 | key | default | effect |
 | --- | --- | --- |
-| `ApiHost` | `ns.recflare.net` | replaces `ns.rec.net` in the game's API request URIs |
-| `PhotonHost` | `photon.recflare.net` | DNS target for `*.photonengine` / `exitgames` / `photonindustries`; **empty = leave Photon alone entirely** |
+| `ApiHost` | *(empty)* | host that replaces `ns.rec.net` in the game's API request URIs; **empty = leave the URIs alone** |
+| `PhotonHost` | *(empty)* | DNS target for `*.photonengine` / `exitgames` / `photonindustries`; **empty = leave Photon alone entirely** |
 | `PhotonPort` | `0` | requires `PhotonHost`; port of the initial Photon connect, `0` = leave it alone |
 | `EnableConsole` | `false` | debug console window; costs load time (focus theft -> Unity throttling) |
 | `BlockDeadHosts` | `true` | fail third-party telemetry/analytics lookups instantly |

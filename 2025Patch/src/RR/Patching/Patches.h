@@ -38,8 +38,9 @@ void SendRequest_H(void* request) {
 		Il2cppString* Uri = spoof_call(RetAddr, fn, uri);
 
 		std::string find = "ns.rec.net";
-		// The mirror's nameserver (serves the service map). From 2025patch.ini; defaults to
-		// ns.recflare.net. The host being replaced is the dead official one, so it stays fixed.
+		// The replacement nameserver (whatever serves the service map) comes from 2025patch.ini and
+		// from nowhere else -- there is no compiled-in host, so an unset ApiHost means no rewrite at
+		// all. The host being replaced is the dead official one, so it stays fixed.
 		std::string replace = RR::Config::ApiHost;
 
 		// ReadIl2CppString returns a new[]-allocated buffer or nullptr. `std::string s = nullptr` is
@@ -56,7 +57,9 @@ void SendRequest_H(void* request) {
 		delete[] raw;
 
 		TraceLog("[SendRequest] #%ld url=%s", n, url.c_str());
-		if (url.find(find) != std::string::npos) {
+		// No ApiHost configured = no rewrite. Without this guard an empty value would splice the host
+		// out of the URI entirely rather than leaving the request alone.
+		if (!replace.empty() && url.find(find) != std::string::npos) {
 			url.replace(url.find(find), find.length(), replace);
 			TraceLog("[SendRequest] #%ld REWRITE -> %s", n, url.c_str());
 
@@ -431,8 +434,8 @@ bool VerifyImageSig_H(void* data, void* sig, void* mi) {
 // =============================================================================================
 // PHOTON BACKEND SELECTION
 //
-// The whole Photon story is ONE knob: RR::Config::PhotonHost (2025patch.ini, default
-// photon.recflare.net), plus PhotonPort for the initial connect port.
+// The whole Photon story is ONE knob: RR::Config::PhotonHost (2025patch.ini; no compiled-in
+// default, so unset means off), plus PhotonPort for the initial connect port.
 //
 //   PhotonHost set   -> DNS for *.photonengine / exitgames / photonindustries is redirected to it,
 //                       and PhotonPort, if non-zero, overrides the connect port on AppSettings.
@@ -975,16 +978,19 @@ namespace RR::Patches {
 
 		PatchLog("[Patch] hooks installed: Referee x4, TLS, SendRequest, CheatMgr, ImgSig, getaddrinfo, GetAddrInfoW%s%s",
 			photonConnectHook ? ", PhotonConnect" : "", RR::Config::EnableTracing ? " + tracing" : "");
+		// Either host may legitimately be unset -- both come from the ini and nothing is compiled in --
+		// so say so rather than logging a blank.
+		const char* apiHost = *RR::Config::ApiHost ? RR::Config::ApiHost : "(unchanged -- no ApiHost set)";
 		if (!*RR::Config::PhotonHost) {
-			PatchLog("[Patch] API host=%s  Photon=(unchanged -- no PhotonHost set)", RR::Config::ApiHost);
+			PatchLog("[Patch] API host=%s  Photon=(unchanged -- no PhotonHost set)", apiHost);
 		}
 		else if (RR::Config::PhotonPort) {
 			PatchLog("[Patch] API host=%s  Photon=%s  port=%d",
-				RR::Config::ApiHost, RR::Config::PhotonHost, RR::Config::PhotonPort);
+				apiHost, RR::Config::PhotonHost, RR::Config::PhotonPort);
 		}
 		else {
 			PatchLog("[Patch] API host=%s  Photon=%s  port=(as supplied)",
-				RR::Config::ApiHost, RR::Config::PhotonHost);
+				apiHost, RR::Config::PhotonHost);
 		}
 	}
 }
