@@ -45,8 +45,10 @@ namespace RR::Config {
 	// purely a matter of swapping the server -- which is exactly what this one value does.
 	char PhotonHost[128] = "";
 
-	// Requires PhotonHost. 0 = leave whatever the server/client supplied. This is the port of the
-	// INITIAL connect (name server / master); the master still hands out its own game-server ports.
+	// Requires PhotonHost. 0 = leave Photon's protocol default (5058 UDP, 27000 alternative UDP).
+	// This is the port of the INITIAL NAME-SERVER connect only -- it is written into the client at
+	// GetNameServerAddress, since a port never passes through getaddrinfo. The master hands out its
+	// own master/game-server addresses afterwards, ports included, so those come from the server.
 	int PhotonPort = 0;
 
 	// Diagnostic console (AllocConsole). Off by default and worth leaving off: the console window
@@ -241,7 +243,8 @@ namespace RR::Config {
 			"; Photon server its backend gives it. The app ids always come from the server.\n"
 			"PhotonHost=%s\n"
 			"\n"
-			"; Requires PhotonHost. Port of the initial Photon connect; 0 = leave the supplied port.\n"
+			"; Requires PhotonHost. Port of the initial Photon NAME-SERVER connect; 0 = leave Photon's\n"
+			"; protocol default. The master/game servers are handed out by the server with their own ports.\n"
 			"PhotonPort=%d\n"
 			"\n"
 			"; Debug console window. Costs load time -- it steals focus and Unity throttles while\n"

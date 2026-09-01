@@ -20,12 +20,12 @@ namespace RR::Methods::HTTPRequest {
 	uintptr_t CallCallback = 0x77EBAE0;
 }
 
-// Photon.Realtime.AppSettings -- the settings object the client hands to its connect call. Field
+// Photon.Realtime.AppSettings -- the settings object Photon's ConnectUsingSettings reads. Field
 // offsets from the runtime dump (build 19/07/25); these names are NOT obfuscated.
+//
+// NOTHING HERE IS EVER READ BY THIS CLIENT. Kept only as the map of an object that looks like the
+// obvious seam and is not one -- read the DEAD SEAM block below before reaching for it again.
 namespace RR::Offsets::AppSettings {
-	// Only Port is written (PhotonPort); the rest are mapped for reference. In particular the three
-	// AppId fields are NOT ours to set -- this client takes its Photon app ids from an endpoint on
-	// the server, not from AppSettings.
 	constexpr int AppIdRealtime  = 16;   // Il2CppString*
 	constexpr int AppIdChat      = 24;   // Il2CppString*
 	constexpr int AppIdVoice     = 32;   // Il2CppString*
@@ -36,11 +36,44 @@ namespace RR::Offsets::AppSettings {
 	constexpr int Port           = 80;   // int32
 }
 
-// OLPEILEPEAD.JBNCMFDFDLM(AppSettings) -- the "ConnectUsingSettings" seam. Hooking it lets us set
-// the connect port immediately before the client connects; the host itself is swapped at the DNS
-// layer instead. Only hooked when PhotonHost and PhotonPort are both configured.
+// =============================================================================================
+// DEAD SEAM: OLPEILEPEAD.JBNCMFDFDLM(AppSettings) at 0x757E8C0 -- Photon's ConnectUsingSettings.
+//
+// It IS the right method. Disassembly shows it copying AppIdRealtime/AppVersion/UseNameServer onto
+// the LoadBalancingClient, and on the name-server branch doing exactly
+//     mov eax, [rbx+0x50]      ; appSettings.Port
+//     mov [rdi+0x180], eax     ; this.NameServerPortInAppSettings
+// so writing AppSettings.Port there would have worked.
+//
+// THIS CLIENT NEVER CALLS IT. The hook installed fine -- MinHook's E9 is visible at 0x757E8C0 in a
+// live image capture -- and its body never ran once: not one [Photon] Port line exists in any
+// session log, including sessions where the getaddrinfo redirect logged normally on the very same
+// connect. callxref and mxref both find zero references to it. Rec Room configures the
+// LoadBalancingClient field by field and connects through ConnectToNameServer instead.
+//
+// That also corrects an older finding recorded in Patches.h: the AppSettings.AppId* writes did not
+// show that "the client ignores those fields", they showed the hook never ran. Do not re-hook this
+// address, and do not read a silent AppSettings write as evidence about what the client consumes.
+// =============================================================================================
+
+// Photon.Realtime.LoadBalancingClient (OLPEILEPEAD) -- the connection object itself.
+namespace RR::Offsets::LoadBalancingClient {
+	// NameServerPortInAppSettings. GetNameServerAddress formats "<NameServerHost>:<port>", and this
+	// field wins over the protocol default whenever it is non-zero:
+	//     cmp dword ptr [rbx+0x180], 0 / jne -> use [rbx+0x180]
+	// The defaults it overrides are 5058 (UDP) and 27000 (alternative UDP ports). It is the only
+	// writable port input on the name-server connect, which is why PhotonPort is applied here.
+	constexpr int NameServerPortInAppSettings = 0x180;   // int32
+}
+
+// OLPEILEPEAD.FHFJBMBEBPP() -- GetNameServerAddress, and the live seam for the connect port. Every
+// path that reaches the name server (ConnectToNameServer, ConnectToRegionMaster, the
+// NameServerAddress getter) funnels through it, and it reads NameServerPortInAppSettings on the
+// way -- so writing that field just before the original runs is what makes PhotonPort take effect.
+// The host itself is still swapped at the DNS layer. Only hooked when PhotonHost and PhotonPort are
+// both set.
 namespace RR::Methods::Photon {
-	uintptr_t ConnectUsingSettings = 0x757E8C0;
+	uintptr_t GetNameServerAddress = 0x757B960;
 }
 
 // Photon transport encryption.

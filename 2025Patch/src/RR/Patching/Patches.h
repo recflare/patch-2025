@@ -445,12 +445,17 @@ bool VerifyImageSig_H(void* data, void* sig, void* mi) {
 //
 // Swapping the server is genuinely all there is to do, because the app ids are NOT ours to set:
 // this client takes its Realtime/Voice/Chat ids from an endpoint on the server (Luxon hands out its
-// own "rf-..." ids), not from AppSettings. There used to be a UsePhotonCloud flag with
-// CloudAppIdRealtime/Voice/Chat and CloudFixedRegion knobs that wrote AppSettings.AppId* just before
-// connect; all of it was removed once it was established that the client never reads those fields,
-// so the writes achieved nothing. To reach a different Photon deployment, point the backend at it
-// and set PhotonHost. Do not re-add an app-id knob without first confirming the client actually
-// consumes AppSettings.AppId*.
+// own "rf-..." ids). There used to be a UsePhotonCloud flag with CloudAppIdRealtime/Voice/Chat and
+// CloudFixedRegion knobs that wrote AppSettings.AppId* just before connect; all of it was removed
+// after those writes were seen to achieve nothing. To reach a different Photon deployment, point
+// the backend at it and set PhotonHost.
+//
+// ⚠️ The stated REASON for removing them was wrong, and it stayed wrong here for a long time. It
+// was recorded as "the client never reads AppSettings.AppId*". It does read them -- in
+// ConnectUsingSettings, which this client never calls, so the hook doing the writing never ran at
+// all. Nothing on AppSettings is consumed by this client, app ids included. The same mistake later
+// hid the PhotonPort bug (see the DEAD SEAM block in Methods.h): a hook that logs nothing is
+// evidence about the hook, not about the field.
 //
 // What that flag was for, kept because the answer still stands: against Luxon the client joins, gets
 // ~4 SetProperties answered, then receives NO responses for ~50s and dies with "Unable to send
@@ -469,30 +474,49 @@ bool VerifyImageSig_H(void* data, void* sig, void* mi) {
 // =============================================================================================
 
 // ---------------------------------------------------------------------------------------------
-// Apply PhotonPort to AppSettings just before the client connects.
+// Apply PhotonPort to the name-server connect.
 //
 // The Photon host is redirected at the DNS layer, but a PORT never passes through getaddrinfo, so a
-// non-default one has to be written onto the settings object instead -- and this is the one seam
-// where it is fully built and not yet used. The master still hands out its own game-server ports
-// afterwards; this only moves the initial name-server/master connect.
+// non-default one has to be written into the client instead. GetNameServerAddress is where that
+// decision is made: it formats "<NameServerHost>:<port>" and takes the port from
+// LoadBalancingClient.NameServerPortInAppSettings when that field is non-zero, otherwise from the
+// protocol default (5058 UDP, 27000 alternative UDP). Writing the field immediately before the
+// original runs therefore lands on every path that reaches the name server. The master still hands
+// out its own master/game-server ports afterwards; this only moves the initial connect.
+//
+// THIS REPLACED A HOOK ON ConnectUsingSettings, WHICH NEVER RAN. That method reads AppSettings.Port
+// and would have been the tidier seam, but this client never calls it -- the port silently stayed
+// at 5058 and the hook logged nothing at all. The full evidence is in the DEAD SEAM block in
+// Methods.h; the short version is that no [Photon] Port line ever appeared in a session log while
+// the getaddrinfo redirect on the same connect logged fine. If this hook ever goes quiet the same
+// way, that is the first thing to check -- the line below is unconditional on first call for
+// exactly that reason.
 //
 // Only installed when PhotonHost AND PhotonPort are both set (see Patch()), so reaching this hook
-// already means the caller wants the port changed. It does not touch the app ids -- see the block
-// above; the client takes those from the server.
+// already means the caller wants the port changed. A managed string is returned by the original and
+// simply passed through; nothing here calls back into il2cpp.
 // ---------------------------------------------------------------------------------------------
-bool (*ConnectUsingSettings_O)(void*, void*, void*);
+void* (*GetNameServerAddress_O)(void*, void*);
 
-bool ConnectUsingSettings_H(void* self, void* settings, void* mi) {
+void* GetNameServerAddress_H(void* self, void* mi) {
 	__try {
-		if (settings && *RR::Config::PhotonHost && RR::Config::PhotonPort != 0) {
-			int32_t was = read<int32_t>(settings, RR::Offsets::AppSettings::Port);
-			set<int32_t>(settings, RR::Offsets::AppSettings::Port, (int32_t)RR::Config::PhotonPort);
-			PatchLog("[Photon] Port %d -> %d (PhotonPort, host %s via DNS redirect)",
-				(int)was, RR::Config::PhotonPort, RR::Config::PhotonHost);
+		if (self && RR::Config::PhotonPort != 0) {
+			int32_t was = read<int32_t>(self, RR::Offsets::LoadBalancingClient::NameServerPortInAppSettings);
+			if (was != (int32_t)RR::Config::PhotonPort) {
+				set<int32_t>(self, RR::Offsets::LoadBalancingClient::NameServerPortInAppSettings,
+					(int32_t)RR::Config::PhotonPort);
+				static bool logged = false;
+				if (!logged) {
+					logged = true;
+					// 0 = the field was unset, i.e. the client was about to use the protocol default.
+					PatchLog("[Photon] NameServer port %d -> %d (PhotonPort, host %s via DNS redirect)",
+						(int)was, RR::Config::PhotonPort, RR::Config::PhotonHost);
+				}
+			}
 		}
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {}
-	return ConnectUsingSettings_O(self, settings, mi);
+	return GetNameServerAddress_O(self, mi);
 }
 
 bool IsPhotonHost(const std::string& node) {
@@ -894,8 +918,8 @@ namespace RR::Patches {
 		// is not installed rather than installed as a no-op.
 		const bool photonConnectHook = *RR::Config::PhotonHost && RR::Config::PhotonPort != 0;
 		if (photonConnectHook) {
-			MH_CreateHook((void*)(GA + RR::Methods::Photon::ConnectUsingSettings), &ConnectUsingSettings_H, (LPVOID*)&ConnectUsingSettings_O);
-			MH_EnableHook((void*)(GA + RR::Methods::Photon::ConnectUsingSettings));
+			MH_CreateHook((void*)(GA + RR::Methods::Photon::GetNameServerAddress), &GetNameServerAddress_H, (LPVOID*)&GetNameServerAddress_O);
+			MH_EnableHook((void*)(GA + RR::Methods::Photon::GetNameServerAddress));
 		}
 
 		// NOT hooked: EnetPeer.IsTransportEncrypted. Measured original=0, i.e. the client was ALREADY
@@ -977,7 +1001,7 @@ namespace RR::Patches {
 		}
 
 		PatchLog("[Patch] hooks installed: Referee x4, TLS, SendRequest, CheatMgr, ImgSig, getaddrinfo, GetAddrInfoW%s%s",
-			photonConnectHook ? ", PhotonConnect" : "", RR::Config::EnableTracing ? " + tracing" : "");
+			photonConnectHook ? ", PhotonNsPort" : "", RR::Config::EnableTracing ? " + tracing" : "");
 		// Either host may legitimately be unset -- both come from the ini and nothing is compiled in --
 		// so say so rather than logging a blank.
 		const char* apiHost = *RR::Config::ApiHost ? RR::Config::ApiHost : "(unchanged -- no ApiHost set)";

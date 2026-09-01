@@ -53,7 +53,7 @@ Referee bypass and the rest of the patch still apply, the client just keeps talk
 | --- | --- | --- |
 | `ApiHost` | *(empty)* | host that replaces `ns.rec.net` in the game's API request URIs; **empty = leave the URIs alone** |
 | `PhotonHost` | *(empty)* | DNS target for `*.photonengine` / `exitgames` / `photonindustries`; **empty = leave Photon alone entirely** |
-| `PhotonPort` | `0` | requires `PhotonHost`; port of the initial Photon connect, `0` = leave it alone |
+| `PhotonPort` | `0` | requires `PhotonHost`; port of the initial Photon name-server connect, `0` = Photon's protocol default. Master/game servers keep the ports the server hands out |
 | `EnableConsole` | `false` | debug console window; costs load time (focus theft -> Unity throttling) |
 | `BlockDeadHosts` | `true` | fail third-party telemetry/analytics lookups instantly |
 | `EnableTracing` | `false` | verbose diagnostic hooks; chatty, only for investigating |

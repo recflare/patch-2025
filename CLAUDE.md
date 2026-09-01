@@ -179,7 +179,7 @@ and new diagnostics should use `PatchLog`.
 
 `Patch()` is split accordingly: the load-bearing hooks install unconditionally — Referee x4, the TLS
 `NotifyServerCertificate` no-op, `SendRequest_H` (host rewrite), `CheatQuit_H`, `VerifyImageSig_H`
-and the two winsock DNS hooks — `ConnectUsingSettings_H` installs only when `PhotonHost` *and*
+and the two winsock DNS hooks — `GetNameServerAddress_H` installs only when `PhotonHost` *and*
 `PhotonPort` are both set, since it would otherwise be a no-op — while all 19 diagnostic hooks live in one
 `if (RR::Config::EnableTracing)` block and are not installed at all when it is off. Routine
 per-request chatter uses the `TraceLog` macro (a no-op unless tracing is on) so `SendRequest_H` stays
@@ -207,8 +207,8 @@ Read at attach by `RR::Config::Load()` (`2025Patch/src/RR/Config.h`), called fro
 | key | default | effect |
 | --- | --- | --- |
 | `ApiHost` | *(empty)* | host that replaces `ns.rec.net` in BestHTTP request URIs. **Empty = no rewrite at all** — every URI passes through as the game built it |
-| `PhotonHost` | *(empty)* | `getaddrinfo` target for `*.photonengine` / `exitgames` / `photonindustries`. **Empty = make no Photon changes at all** — no DNS redirect, no `AppSettings` write, `ConnectUsingSettings_H` not even hooked |
-| `PhotonPort` | `0` | requires `PhotonHost`; overrides `AppSettings.Port` for the initial connect. `0` = leave the supplied port |
+| `PhotonHost` | *(empty)* | `getaddrinfo` target for `*.photonengine` / `exitgames` / `photonindustries`. **Empty = make no Photon changes at all** — no DNS redirect, no port write, `GetNameServerAddress_H` not even hooked |
+| `PhotonPort` | `0` | requires `PhotonHost`; overrides the **name-server** port for the initial connect. `0` = leave the protocol default |
 | `EnableConsole` | `false` | AllocConsole debug window. Costs load time (focus theft → Unity throttling); everything it prints is already in `2025patch.log` |
 | `BlockDeadHosts` | `true` | `getaddrinfo` returns `WSAHOST_NOT_FOUND` for `IsDeadHost` matches. **Third-party hosts only** — rudderstack, backtrace, statsig, `cloud.unity3d.com`. Most are still *live*, so this keeps an archival session's telemetry and crash dumps off unrelated companies' servers — but the backtrace entry is load-bearing: its upload backlog is what disconnects Photon. Never list a `*.recflare.net` host: see the serial-queue warning above |
 | `EnableTracing` | `false` | Installs the diagnostic hooks ([Pump]/[Send] queue probes, Photon operation/status/event tracers, HttpClient paths, BestHTTP responses) and un-quiets `SendRequest`'s per-request lines. Off = none of them are hooked at all |
@@ -229,20 +229,32 @@ effective set is logged as `[Config] ...`, plus `[Patch] API host=... Photon=...
 backend this patch talks to comes from the ini and from nowhere else. Both go through the same
 `ReadHost`, and for both an empty value is the master switch for that rewrite: blank `ApiHost` means
 `SendRequest_H` leaves every URI as the game built it (the hook is still installed, it just does not
-rewrite), blank `PhotonHost` means no DNS redirect, no `AppSettings` write, and no
-`ConnectUsingSettings` hook. The three cases are kept distinct on purpose — key absent keeps the
+rewrite), blank `PhotonHost` means no DNS redirect, no port write, and no
+`GetNameServerAddress` hook. The three cases are kept distinct on purpose — key absent keeps the
 current value (empty unless something set it), present-and-blank explicitly clears, and
 present-but-unsanitizable (`https://`) is malformed input and keeps the current value.
 
 There is no app-id knob and no Cloud flag: this client takes its Realtime/Voice/Chat app ids from an
-endpoint on the server, not from `AppSettings`, so swapping the Photon server is the entire job.
-`UsePhotonCloud` + `CloudAppId*` + `CloudFixedRegion` existed to A/B against real Photon Cloud and
-were removed once it was established that the `AppSettings.AppId*` writes did nothing — see the
-PHOTON BACKEND SELECTION block in Patches.h, which keeps the finding.
+endpoint on the server, so swapping the Photon server is the entire job. `UsePhotonCloud` +
+`CloudAppId*` + `CloudFixedRegion` existed to A/B against real Photon Cloud and were removed after
+their `AppSettings.AppId*` writes were seen to achieve nothing — see the PHOTON BACKEND SELECTION
+block in Patches.h, which keeps the finding *and* the correction to it.
 
-`PhotonPort` has to go through `AppSettings` rather than the DNS hooks — a port never passes through
-`getaddrinfo` — so it is applied in `ConnectUsingSettings_H`, and the master still hands out its own
-game-server ports afterwards.
+⚠️ **`AppSettings` is a dead seam on this build — all of it.** `ConnectUsingSettings`
+(`OLPEILEPEAD.JBNCMFDFDLM`, `0x757E8C0`) is the real method and does read `AppSettings.Port` and the
+app ids, but **this client never calls it**: Rec Room configures the `LoadBalancingClient` field by
+field and connects through `ConnectToNameServer`. A hook there installs cleanly and its body never
+runs, which is what made both the app-id writes and, later, `PhotonPort` fail silently. The DEAD SEAM
+block in `Methods.h` has the evidence. The general lesson, since it cost this project twice: a hook
+that logs nothing is evidence about the hook, not about the field it was going to write.
+
+`PhotonPort` cannot go through the DNS hooks — a port never passes through `getaddrinfo` — so it is
+written into the client instead, at `GetNameServerAddress` (`OLPEILEPEAD.FHFJBMBEBPP`, `0x757B960`).
+That method formats `"<NameServerHost>:<port>"` and prefers
+`LoadBalancingClient.NameServerPortInAppSettings` (`+0x180`) over the protocol default (5058 UDP,
+27000 alternative UDP), so `GetNameServerAddress_H` writes that field just before forwarding. Every
+name-server path funnels through it. This moves **only the initial name-server connect**; the master
+still hands out its own master/game-server ports afterwards, so those come from the server.
 
 Not configurable: the host being *matched* (`ns.rec.net`) and the Photon-name substrings in
 `IsPhotonHost`, both still literals in Patches.h. A pre-rename ini using `[hosts]` applies nothing —
