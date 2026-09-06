@@ -1,6 +1,9 @@
 # Rec Room 2025 Patch
 
-Fork of https://github.com/Carpetsoft/Rec-Room-2025-Patch
+**Credits:** Fork of https://github.com/Carpetsoft/Rec-Room-2025-Patch
+
+This fork adds more support for photon settings and moves overrides into configuration
+so it does not have to be rebuilt to change the name or photon server.
 
 Compatible with build 20250718.01 (19 July 2025), Steam manifest 1151455856673601091.
 
