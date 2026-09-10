@@ -56,6 +56,7 @@ Referee bypass and the rest of the patch still apply, the client just keeps talk
 | `PhotonPort` | `0` | requires `PhotonHost`; port of the initial Photon name-server connect, `0` = Photon's protocol default. Master/game servers keep the ports the server hands out |
 | `EnableConsole` | `false` | debug console window; costs load time (focus theft -> Unity throttling) |
 | `BlockDeadHosts` | `true` | fail third-party telemetry/analytics lookups instantly |
+| `SuppressDuidMismatch` | `true` | force the device-id mismatch check to false, fixing the launch / Create Account hang on a machine with a corrupt stored device id |
 | `EnableTracing` | `false` | verbose diagnostic hooks; chatty, only for investigating |
 
 Whatever ends up in effect is logged as `[Config] ...` in `2025patch.log`.

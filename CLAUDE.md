@@ -211,6 +211,7 @@ Read at attach by `RR::Config::Load()` (`2025Patch/src/RR/Config.h`), called fro
 | `PhotonPort` | `0` | requires `PhotonHost`; overrides the **name-server** port for the initial connect. `0` = leave the protocol default |
 | `EnableConsole` | `false` | AllocConsole debug window. Costs load time (focus theft → Unity throttling); everything it prints is already in `2025patch.log` |
 | `BlockDeadHosts` | `true` | `getaddrinfo` returns `WSAHOST_NOT_FOUND` for `IsDeadHost` matches. **Third-party hosts only** — rudderstack, backtrace, statsig, `cloud.unity3d.com`. Most are still *live*, so this keeps an archival session's telemetry and crash dumps off unrelated companies' servers — but the backtrace entry is load-bearing: its upload backlog is what disconnects Photon. Never list a `*.recflare.net` host: see the serial-queue warning above |
+| `SuppressDuidMismatch` | `true` | Forces `CheatManager.CheckForDUIDMismatch` to false. **The fix for the client hanging at launch / Create Account** on a machine whose *stored* device id no longer matches the runtime one — see below. No-op on healthy machines; set `false` only to reproduce the hang |
 | `EnableTracing` | `false` | Installs the diagnostic hooks ([Pump]/[Send] queue probes, Photon operation/status/event tracers, HttpClient paths, BestHTTP responses) and un-quiets `SendRequest`'s per-request lines. Off = none of them are hooked at all |
 | `VoiceKeyXml` | *(empty)* | RSA **public** key (`<RSAKeyValue>` XML, one line) that the Tachyon voice handshake is encrypted to. Empty = keep Rec Room's baked-in key. Set it to your own and the voice server can decrypt the handshake — see *Voice handshake re-key* below |
 
@@ -319,6 +320,41 @@ behaving exactly as it did before.
 
 ⚠️ `DMIBBCKIGCG.NDEDJKDIGGM()` / `CKAAEJMIMEF()` look like the getters for these statics but have
 **zero callers** — the ctor reads the field directly. Do not hook them.
+
+## When the client hangs at launch, suspect the device id (DUID)
+
+On a machine whose **stored** device id differs from the one derived at runtime,
+`CheatManager.CheckForDUIDMismatch(out string)` (`0x2133600`) returns true and the client takes a
+migration path that POSTs `PlayerReporting/v1/deviceId` and then **waits for a response it will
+accept**. The archival server answers `200 {"success":true}` and it waits anyway — no
+`create_account` OAuth, and `WriteDUIDs` never runs, so the id is never persisted. It presents as
+"the game will not launch" or "Create Account hangs", is machine-specific (matching machines never
+enter the path), and leaves nothing obviously wrong in the log.
+
+`SuppressDuidMismatch` (default **true**) forces that check to false so the path is never entered.
+Replayed from recnet-patcher's `Patches/DUIDMismatchPatch.cs` (commit `6a62f0c`), where the same fix
+also ships on by default.
+
+⚠️ **It is a workaround, not a repair** — it does not fix the stored id, and two things learned in
+recnet-patcher constrain any attempt to do so properly:
+
+- **Clearing local storage does not fix it.** The id lives in PlayerPrefs `cm_did_ppk` (registry
+  `cm_did_ppk_h3478365449`, CodeStage-obscured so never plaintext), but deleting it did not change
+  the `oldDeviceId` in the POST, and on the failing run `cm_did_ppk` was never read at all.
+- **Where the old id comes from is still unknown.** It survives deleting the whole
+  `HKCU\Software\Against Gravity\Rec Room` key and appears nowhere as plaintext under
+  `AppData/LocalLow`. Leading theory: the backend recorded it from an earlier POST and hands it back.
+  So the real fix is server-side — make the endpoint stop reporting a stale old id.
+
+`DuidMismatch_H` calls the real check once and logs the stored id it produced (`[DUID] ...
+original=N stored="..."`). That line is aimed squarely at the open question; if a value ever shows
+up there, it is the first hard evidence of where the old id lives.
+
+Note the address is **prologue-stolen** — the first `0x19` bytes at `0x2133600` are encrypted filler
+(a memory carve reads them as `nop; jmp <thunk outside the module>`) and the real body starts at
+`0x2133619`. Disassembling from the entry looks like junk; that is expected, not a wrong address.
+recnet-patcher's remaining DUID tooling (`CorruptDUIDPatch`, `DeviceIdResponsePatch`, `DUIDProbePatch`)
+was **not** ported — it is diagnostic-only and lives there.
 
 ## When the client exits on its own, suspect CheatManager first
 

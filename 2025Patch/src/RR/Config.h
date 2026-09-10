@@ -73,6 +73,14 @@ namespace RR::Config {
 	// fast response stops the retries -- stub it server-side and drop it from the list instead.
 	bool BlockDeadHosts = true;
 
+	// DEVICE-ID (DUID) MISMATCH SUPPRESSION -- the fix for "the game will not launch" / Create Account
+	// hanging on a machine whose STORED device id no longer matches the one derived at runtime.
+	// true (default) = CheatManager.CheckForDUIDMismatch is forced to false, so the client never takes
+	// the deviceId migration path it cannot get back out of. A no-op on healthy machines, which
+	// already answer false. Set it false ONLY to observe a real mismatch -- that reproduces the hang.
+	// See the DEVICE-ID (DUID) block in Patches.h; this is a workaround, the real fix is server-side.
+	bool SuppressDuidMismatch = true;
+
 	// VOICE (Tachyon) RSA PUBLIC KEY -- .NET <RSAKeyValue> XML, on ONE line.
 	//
 	// EMPTY IS THE OFF SWITCH: leave it blank and the client keeps Rec Room's baked-in key, exactly
@@ -256,12 +264,16 @@ namespace RR::Config {
 			"; telemetry and crash dumps from reaching unrelated companies. Do not add recflare hosts.\n"
 			"BlockDeadHosts=%s\n"
 			"\n"
+			"; Force the device-id (DUID) mismatch check to false. Fixes the launch / Create Account\n"
+			"; hang on a machine with a corrupt stored device id; a no-op on healthy machines.\n"
+			"SuppressDuidMismatch=%s\n"
+			"\n"
 			"; Verbose diagnostic tracing: request-pump probes, Photon operation/event tracers,\n"
 			"; HttpClient paths, BestHTTP responses. Chatty; only needed when investigating.\n"
 			"EnableTracing=%s\n",
 			kSection, ApiHost, PhotonHost, PhotonPort,
 			EnableConsole ? "true" : "false", BlockDeadHosts ? "true" : "false",
-			EnableTracing ? "true" : "false");
+			SuppressDuidMismatch ? "true" : "false", EnableTracing ? "true" : "false");
 		fclose(f);
 	}
 
@@ -284,16 +296,18 @@ namespace RR::Config {
 		ReadHost(path, "PhotonHost", PhotonHost, sizeof(PhotonHost), "leaving Photon untouched");
 		ReadBool(path, "EnableConsole",  EnableConsole);
 		ReadBool(path, "BlockDeadHosts", BlockDeadHosts);
+		ReadBool(path, "SuppressDuidMismatch", SuppressDuidMismatch);
 		ReadBool(path, "EnableTracing",  EnableTracing);
 		ReadPort(path, "PhotonPort",     PhotonPort);
 		ReadVoiceKey(path, VoiceKeyXml, sizeof(VoiceKeyXml));
 
 		PatchLog("[Config] %s", path);
-		PatchLog("[Config] ApiHost=%s PhotonHost=%s PhotonPort=%d EnableConsole=%s BlockDeadHosts=%s EnableTracing=%s",
+		PatchLog("[Config] ApiHost=%s PhotonHost=%s PhotonPort=%d EnableConsole=%s BlockDeadHosts=%s"
+			" SuppressDuidMismatch=%s EnableTracing=%s",
 			*ApiHost ? ApiHost : "(none -- URIs untouched)",
 			*PhotonHost ? PhotonHost : "(none -- Photon untouched)", PhotonPort,
 			EnableConsole ? "true" : "false", BlockDeadHosts ? "true" : "false",
-			EnableTracing ? "true" : "false");
+			SuppressDuidMismatch ? "true" : "false", EnableTracing ? "true" : "false");
 		PatchLog("[Config] VoiceKeyXml=%s",
 			*VoiceKeyXml ? "(set -- voice handshake re-keyed)" : "(none -- Rec Room's key kept)");
 	}

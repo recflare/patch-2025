@@ -203,6 +203,39 @@ namespace RR::Methods::AppLifecycle {
 // is what located this call site, and it is the fastest way to re-find it after a build rolls.
 namespace RR::Methods::AntiCheat {
 	uintptr_t ModuleScanDetected = 0x2148FB0;  // CheatManager+LFKHKEPJKMB.LOELLDBOINB()
+
+	// ---------------------------------------------------------------------------------------------
+	// CheatManager.CheckForDUIDMismatch(out string storedId) -> bool.
+	//
+	// Returns true when the device id STORED for this machine differs from the one derived at runtime.
+	// True sends the client down a migration path that POSTs PlayerReporting/v1/deviceId and then
+	// waits -- on a machine with a corrupt stored id it waits forever, so the client "will not launch"
+	// / Create Account hangs. Forcing it false skips that path. Same fix as recnet-patcher's
+	// DUIDMismatchPatch (commit 6a62f0c); the full symptom and what is still unsolved are in the
+	// DEVICE-ID (DUID) block in Patches.h.
+	//
+	// SIGNATURE: an INSTANCE method, so natively bool(void* self, Il2cppString** out, void* mi).
+	// Read off its own tail call -- it is a thin wrapper over IPADPMEDADH (0x2133E80):
+	//     xor r8d, r8d      ; MethodInfo* = null
+	//     mov rdx, rbx      ; arg2 -- the out-param
+	//     mov rcx, rdi      ; arg1 -- self
+	//     jmp CheatManager$$IPADPMEDADH
+	// Two forwarded arguments plus a null MethodInfo = self + one out-param; a static one-param method
+	// would have forwarded only one. Worth re-checking on a new build: dnSpy dumps of OTHER builds
+	// show these DUID methods as static, so the instance/static answer is genuinely build-dependent.
+	//
+	// This RVA came from methods.pkl, which was cross-checked against every already-verified address in
+	// this file (ModuleScanDetected, SendRequest, GetNameServerAddress, FatalApplicationQuit,
+	// LogoutToBootScene, Pump, Tachyon::Ctor, ImageSignature::Verify) -- all exact, +0x0.
+	//
+	// (!) Unlike ModuleScanDetected, this entry is PROLOGUE-STOLEN: on disk the first 0x19 bytes are
+	// encrypted filler, in a memory carve they read as `nop; jmp <thunk allocated outside the module>`,
+	// and the real body only starts at 0x2133619. Overwriting the entry is unaffected, so the forced
+	// return is safe; it is the CALL BACK to the original -- which DuidMismatch_H makes once, for its
+	// diagnostic line -- that depends on MinHook rebuilding that jmp correctly. That call is wrapped in
+	// __try, and a missing "[DUID] ... original=" line is the signal that it did not survive.
+	// ---------------------------------------------------------------------------------------------
+	uintptr_t CheckForDUIDMismatch = 0x2133600;
 }
 
 namespace RR::Methods::System::Uri {

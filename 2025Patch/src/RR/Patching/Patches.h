@@ -357,6 +357,73 @@ void CheatQuit_H(void* self, void* mi) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// DEVICE-ID (DUID) MISMATCH SUPPRESSOR -- replayed from recnet-patcher's DUIDMismatchPatch.cs
+// (commit 6a62f0c, "Suppress DUID mismatch check resulting in create account hang").
+//
+// SYMPTOM: on a machine whose STORED device id no longer matches the one derived at runtime, the
+// client hangs -- it "will not launch", or Create Account never completes, with nothing obviously
+// wrong in the log. CheatManager.CheckForDUIDMismatch returns true, which sends the client down a
+// migration path that POSTs PlayerReporting/v1/deviceId and then waits for a response it will
+// accept. The archival server answers 200 {"success":true} and the client waits anyway: it never
+// calls the create_account OAuth and never persists the id (WriteDUIDs never runs). Machines whose
+// stored id matches never take the path at all, which is why it looks machine-specific.
+//
+// FIX: force the check to false, so the migration path is never entered. Healthy machines already
+// answer false, so on them this changes nothing.
+//
+// (!) THIS IS A WORKAROUND, NOT A REPAIR. It lets the client through; it does not fix the stored id.
+// The real fix is server-side -- make the endpoint stop reporting a stale old id so old == new and
+// there is no mismatch to migrate. Two findings from recnet-patcher constrain anyone reopening this:
+//
+//   1. CLEARING LOCAL STORAGE DOES NOT FIX IT. The stored id lives in PlayerPrefs `cm_did_ppk`
+//      (registry `cm_did_ppk_h3478365449`, CodeStage-obscured, so never plaintext). Deleting that
+//      value did NOT change the oldDeviceId in the POST, and on the failing run `cm_did_ppk` was
+//      never even read. So it is A copy, not the one that seeds the migration.
+//   2. WHERE THE OLD ID ACTUALLY COMES FROM IS STILL UNKNOWN. It survives deleting the whole
+//      HKCU\Software\Against Gravity\Rec Room key and appears nowhere as plaintext under
+//      AppData/LocalLow. Leading theory: the backend recorded it from an earlier POST and hands it
+//      back. Until that is found, suppression here or a correction server-side are the only fixes.
+//
+// The one diagnostic line below is aimed at (2): it runs the REAL check once and logs the stored id
+// that came back. If a value ever appears there it is the first hard evidence of where the old id
+// lives. Calling the original is safe -- the check only compares; the POST that hangs is issued by
+// the CALLER once the check returns true. It is still wrapped in __try, because this method's entry
+// is prologue-stolen (see RR::Methods::AntiCheat::CheckForDUIDMismatch) and the trampoline is the
+// one part of this hook that depends on MinHook reconstructing that correctly.
+// ---------------------------------------------------------------------------------------------
+bool (*DuidMismatch_O)(void*, Il2cppString**, void*);
+bool DuidMismatch_H(void* self, Il2cppString** stored, void* mi) {
+	bool orig = false;
+	Il2cppString* got = nullptr;
+	__try { orig = DuidMismatch_O(self, &got, mi); }
+	__except (EXCEPTION_EXECUTE_HANDLER) { orig = false; got = nullptr; }
+
+	// Log the first call, and separately the first genuine mismatch -- the mismatch is the event worth
+	// seeing but can happen long after the first call. Bounded at two lines either way; this runs on
+	// CheatManager's own schedule and must not become per-frame chatter.
+	static bool loggedOnce = false, loggedMismatch = false;
+	if (!loggedOnce || (orig && !loggedMismatch)) {
+		loggedOnce = true;
+		if (orig) loggedMismatch = true;
+		__try {
+			char* s = got ? ReadIl2CppString(got) : nullptr;
+			PatchLog("[DUID] CheatManager.CheckForDUIDMismatch original=%d stored=\"%s\" -> %s",
+				orig ? 1 : 0, s ? s : "<null>",
+				RR::Config::SuppressDuidMismatch ? "forcing FALSE (suppressed)" : "passing through");
+			if (s) delete[] s;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {}
+	}
+
+	if (!RR::Config::SuppressDuidMismatch) {
+		if (stored) *stored = got;
+		return orig;
+	}
+	if (stored) *stored = nullptr;
+	return false;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Rec Room shutdown API tracers. See RR::Methods::AppLifecycle.
 //
 // FatalApplicationQuit(int, string) is the prize: it is handed the reason as a plain string, so this
@@ -888,6 +955,12 @@ namespace RR::Patches {
 		MH_CreateHook((void*)(GA + RR::Methods::AntiCheat::ModuleScanDetected), &CheatQuit_H, (LPVOID*)&nop_O);
 		MH_EnableHook((void*)(GA + RR::Methods::AntiCheat::ModuleScanDetected));
 
+		// Device-id (DUID) mismatch suppressor -- THIS is the fix for the client hanging at launch /
+		// Create Account on a machine with a corrupt stored device id. Hooked unconditionally so the one
+		// [DUID] line is logged either way; SuppressDuidMismatch decides whether the result is forced.
+		MH_CreateHook((void*)(GA + RR::Methods::AntiCheat::CheckForDUIDMismatch), &DuidMismatch_H, (LPVOID*)&DuidMismatch_O);
+		MH_EnableHook((void*)(GA + RR::Methods::AntiCheat::CheckForDUIDMismatch));
+
 		// Image content-signature bypass -- mirrored assets can never satisfy rec.net's RSA signature,
 		// and the resulting throw stalls the shared request pump that the room save-data blob is
 		// queued behind. Install BEFORE anything fetches an image.
@@ -1000,7 +1073,7 @@ namespace RR::Patches {
 
 		}
 
-		PatchLog("[Patch] hooks installed: Referee x4, TLS, SendRequest, CheatMgr, ImgSig, getaddrinfo, GetAddrInfoW%s%s",
+		PatchLog("[Patch] hooks installed: Referee x4, TLS, SendRequest, CheatMgr, DUID, ImgSig, getaddrinfo, GetAddrInfoW%s%s",
 			photonConnectHook ? ", PhotonNsPort" : "", RR::Config::EnableTracing ? " + tracing" : "");
 		// Either host may legitimately be unset -- both come from the ini and nothing is compiled in --
 		// so say so rather than logging a blank.
