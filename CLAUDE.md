@@ -284,17 +284,43 @@ The RSA is a public key baked into the client, so `AT` is unreadable without Rec
 `VoiceKeyXml` swaps that public key for one of yours, which makes the whole payload decryptable and
 lets the server authenticate the `accessToken` (and bind the otherwise-unauthenticated `AI` to it).
 
-**How it works.** `TachyonCtor_H` hooks `BAOFAOBLAMJ..ctor` (`0x82795E0`) and, before forwarding,
-overwrites `DMIBBCKIGCG`'s static `KBANIKNNKKD` (statics `+0x08`) — the `<RSAKeyValue>` XML string
-the ctor reads two instructions before calling `rsa.FromXmlString`. **The game performs the import
-itself**; we deliberately do not call `FromXmlString`, because that is a managed method that can
-throw, and a managed exception unwinding through a spoofed return address is the
+**How it works.** `VoiceCctor_H` hooks `DMIBBCKIGCG..cctor` (`0x827A820`), lets it run, and *then*
+overwrites the static `KBANIKNNKKD` it just filled (statics `+0x08`) — the `<RSAKeyValue>` XML string
+the TachyonClient ctor reads two instructions before calling `rsa.FromXmlString`. **The game performs
+the import itself**; we deliberately do not call `FromXmlString`, because that is a managed method
+that can throw, and a managed exception unwinding through a spoofed return address is the
 `STATUS_INVALID_DISPOSITION` crash documented on `SendRequest_H`.
 
-Ordering is the whole trick: the ctor runs `DMIBBCKIGCG`'s `.cctor` a few instructions *before* it
-reads the static, and that `.cctor` is what installs the stock key — so a naive write would just be
-overwritten. `ApplyVoiceKey` calls `il2cpp_runtime_class_init` first, so the game's own check finds
-the class already initialised, skips it, and reads our value.
+Ordering is the whole trick, and the cctor hook gets it for free: the ctor calls that `.cctor` a few
+instructions *before* it reads the static (cctor check at `0x82796C3`), so writing at the end of the
+cctor lands after the stock key and before the import. `TachyonCtor_H` remains, but only to log which
+key the run used and as a fallback for a cctor that ran before the hooks were in.
+
+⚠️ **Do not move this back to the ctor, and do not force the class init.** The first version did both
+and killed the process at launch (18 Sep, `PhotonHandler.Awake`, nothing in the log). Two reasons,
+and the second is the general one:
+
+- `RR::Offsets::Tachyon::KeyHolderTypeInfo` (`0xD1A9AF8`) is a **metadata-usage slot**, and it holds
+  an encoded index (`type << 29 | index`) until il2cpp resolves it — which the *using method* does at
+  the start of its own body. Read from a hook on the ctor's **entry** it is always still an index
+  (measured: `0x20028E0D`, i.e. index `0x28E0D`), and `il2cpp_runtime_class_init` on that is fatal.
+  `LooksLikeResolvedClass` rejects anything under 4 GB for this reason. The cctor resolves the same
+  slot itself (`mov rcx,[rip+0x4F2F25D]` at `0x827A894`), so after it returns the pointer is real.
+- The crash left **no** `[Voice] re-key FAILED` line even though the whole body is inside
+  `__try/__except`. That absence is diagnostic: SEH catches an access violation, so a silent death
+  means the uncatchable kind. `__except` is not evidence that a hook is safe.
+
+The `[Voice]` lines log the existing key before overwriting and read the static back afterwards, so
+one healthy run proves both the offset and the swap:
+
+```
+[Voice] cctor: klass=... statics=... existing key=... "<RSAKeyValue><Modulus>z7L4+nePWLb3f4OzskH39KyiuP"
+[Voice] handshake re-keyed from VoiceKeyXml (415 chars) -- static now "<RSAKeyValue><Modulus>wM8JO2..."
+```
+
+`z7L4+nePWLb3...` is Rec Room's own modulus — if the "existing key" line ever stops looking like a
+`<RSAKeyValue>`, `Static_ServerKeyXml` is wrong for that build and the write is landing on an
+unrelated static.
 
 **Server side.** The client calls `Encrypt(data, fOAEP: false)`, so decrypt with **PKCS#1 v1.5, not
 OAEP**; the symmetric layer is `AesCryptoServiceProvider` defaults = **AES-256-CBC / PKCS7**. Unwrap

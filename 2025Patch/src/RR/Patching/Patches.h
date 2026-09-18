@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../Methods.h"
 #include "../Config.h"
 #include "../../Utils/scan.h"
@@ -861,52 +861,107 @@ namespace RR::Methods::Photon {
 // =================================================================================================
 void (*TachyonCtor_O)(void*, void*);
 
-static void ApplyVoiceKey() {
+// A metadata-usage slot holds an ENCODED INDEX (type<<29 | index) until il2cpp resolves it, and it
+// is resolved by the method that uses it, at the start of that method's body. Reading 0xD1A9AF8 from
+// a hook on the TachyonClient ctor's ENTRY therefore always loses the race: the first (and only)
+// call handed back 0x20028E0D, which is index 0x28E0D, not a pointer -- and calling
+// il2cpp_runtime_class_init on it killed the process with nothing in the log (18 Sep). A pointer
+// under 4 GB is the signature of that bug; a real Il2CppClass* on x64 never is.
+static bool LooksLikeResolvedClass(void* p) {
+	return reinterpret_cast<uintptr_t>(p) >= 0x100000000ull;
+}
+
+static bool s_voiceKeyApplied = false;
+
+// Writes our public key over DMIBBCKIGCG's static. Callers must guarantee the cctor has ALREADY run
+// (see VoiceCctor_H) -- this deliberately does not force the class init, because doing that behind a
+// spoofed return address is what crashed.
+static bool ApplyVoiceKey(const char* when) {
 	__try {
 		auto klass = *reinterpret_cast<uint8_t**>(GA + RR::Offsets::Tachyon::KeyHolderTypeInfo);
-		// The slot holds an encoded metadata index until il2cpp resolves it; by the time a
-		// TachyonClient is constructed it is a real pointer, but check rather than trust.
-		if (reinterpret_cast<uintptr_t>(klass) < 0x10000) {
-			PatchLog("[Voice] key holder not resolved yet (slot=%p) -- Rec Room's key kept", klass);
-			return;
+		if (!LooksLikeResolvedClass(klass)) {
+			PatchLog("[Voice] %s: key holder slot still unresolved (%p = metadata index 0x%X) -- "
+				"Rec Room's key kept", when, klass, (unsigned)(reinterpret_cast<uintptr_t>(klass) & 0x1FFFFFFF));
+			return false;
 		}
-
-		using ClassInitFn = void (*)(void*);
-		auto init = reinterpret_cast<ClassInitFn>(GA + RR::Methods::Il2cpp::il2cpp_runtime_class_init);
-		spoof_call(RetAddr, init, reinterpret_cast<void*>(klass));
 
 		auto statics = read<uint8_t*>(klass, RR::Offsets::Tachyon::Class_StaticFields);
 		if (!statics) {
-			PatchLog("[Voice] key holder has no static block -- Rec Room's key kept");
-			return;
+			PatchLog("[Voice] %s: key holder has no static block -- Rec Room's key kept", when);
+			return false;
 		}
+
+		// Offset proof, logged once: if +0x08 really is KBANIKNNKKD this prints the head of Rec Room's
+		// own <RSAKeyValue>. Anything else means the offset is wrong for this build and the write
+		// below would be scribbling on an unrelated static.
+		auto cur = read<Il2cppString*>(statics, RR::Offsets::Tachyon::Static_ServerKeyXml);
+		char* head = LooksLikeResolvedClass(cur) ? ReadIl2CppString(cur) : nullptr;
+		PatchLog("[Voice] %s: klass=%p statics=%p existing key=%p \"%.48s\"",
+			when, klass, statics, cur, head ? head : "(unreadable)");
+		if (head) delete[] head;
 
 		using Il2cppStringNewFn = Il2cppString * (*)(const char*);
 		auto mk = reinterpret_cast<Il2cppStringNewFn>(GA + RR::Methods::Il2cpp::il2cpp_string_new);
 		Il2cppString* xml = spoof_call(RetAddr, mk, static_cast<const char*>(RR::Config::VoiceKeyXml));
 		if (!xml) {
 			PatchLog("[Voice] il2cpp_string_new failed -- Rec Room's key kept");
-			return;
+			return false;
 		}
 
 		set<void*>(statics, RR::Offsets::Tachyon::Static_ServerKeyXml, xml);
-		PatchLog("[Voice] handshake re-keyed from VoiceKeyXml (%zu chars) -- CKA/CIA/AT are now "
-			"decryptable with your private key", strlen(RR::Config::VoiceKeyXml));
+
+		// Read back rather than trust the store: this is the line that says the swap actually took.
+		char* now = ReadIl2CppString(read<Il2cppString*>(statics, RR::Offsets::Tachyon::Static_ServerKeyXml));
+		PatchLog("[Voice] handshake re-keyed from VoiceKeyXml (%zu chars) -- static now \"%.48s\" -- "
+			"CKA/CIA/AT are decryptable with your private key",
+			strlen(RR::Config::VoiceKeyXml), now ? now : "(unreadable)");
+		if (now) delete[] now;
+		s_voiceKeyApplied = true;
+		return true;
 	} __except (EXCEPTION_EXECUTE_HANDLER) {
-		PatchLog("[Voice] re-key FAILED (exception) -- Rec Room's key still in effect");
+		PatchLog("[Voice] re-key FAILED (exception 0x%08X) -- Rec Room's key still in effect",
+			GetExceptionCode());
+		return false;
 	}
 }
 
+// The hook that does the work. Let Rec Room's static constructor install its own key, then overwrite
+// it. Ordering is free this way -- the ctor calls this cctor a few instructions before it reads the
+// static (cctor check at 0x82796C3), so anything written here is what FromXmlString imports -- and
+// the cctor's own body resolves the 0xD1A9AF8 slot for us (mov rcx,[rip+0x4F2F25D] at 0x827A894),
+// which is the half of the problem that the ctor-entry hook could not solve.
+void (*VoiceCctor_O)();
+void VoiceCctor_H() {
+	VoiceCctor_O();
+	if (*RR::Config::VoiceKeyXml && !s_voiceKeyApplied) {
+		ApplyVoiceKey("cctor");
+	}
+}
+
+// Kept for the one log line that says which key the run is using, and as a late fallback: if the
+// cctor somehow ran before our hooks were in (injection is early, but say so rather than guess), the
+// slot is resolved by now and the write may still land before the RSA import.
 void TachyonCtor_H(void* self, void* deps) {
 	static bool s_logged = false;
-	if (*RR::Config::VoiceKeyXml) {
-		ApplyVoiceKey();
-	} else if (!s_logged) {
+	if (!s_logged) {
 		s_logged = true;
-		PatchLog("[Voice] VoiceKeyXml not set -- handshake stays on Rec Room's key (server cannot read AT)");
+		if (!*RR::Config::VoiceKeyXml) {
+			PatchLog("[Voice] VoiceKeyXml not set -- handshake stays on Rec Room's key (server cannot read AT)");
+		} else if (!s_voiceKeyApplied) {
+			// Expected, and not a problem: this hook is on the ctor's ENTRY, and the ctor only calls
+			// DMIBBCKIGCG's cctor (where the re-key happens) a few instructions into its body. The
+			// slot is still an encoded metadata index at this point, so only retry in the one case
+			// the fallback exists for -- a cctor that already ran before our hooks were in.
+			auto klass = *reinterpret_cast<uint8_t**>(GA + RR::Offsets::Tachyon::KeyHolderTypeInfo);
+			if (LooksLikeResolvedClass(klass)) {
+				PatchLog("[Voice] cctor hook never fired -- retrying the re-key from the ctor");
+				ApplyVoiceKey("ctor");
+			}
+		}
 	}
 	TachyonCtor_O(self, deps);
 }
+
 
 namespace RR::Patches {
 	void Resolve() {
@@ -967,10 +1022,14 @@ namespace RR::Patches {
 		MH_CreateHook((void*)(GA + RR::Methods::ImageSignature::Verify), &VerifyImageSig_H, (LPVOID*)&VerifyImageSig_O);
 		MH_EnableHook((void*)(GA + RR::Methods::ImageSignature::Verify));
 
-		// Voice handshake re-key. Always hooked (it is also the only place that logs which key the
-		// run used); the hook itself no-ops unless VoiceKeyXml is set. Must be in place before the
-		// first TachyonClient is constructed, which is why it goes in at patch time rather than
-		// lazily on the voice path.
+		// Voice handshake re-key. The cctor hook is the one that does the work (it overwrites the key
+		// right after Rec Room's own static constructor installs it); the ctor hook logs which key the
+		// run used and is a late fallback. Both no-op unless VoiceKeyXml is set, and both must be in
+		// before the first TachyonClient is constructed -- which happens during early engine init,
+		// ~2.5s after injection -- so they go in at patch time rather than lazily on the voice path.
+		MH_CreateHook((void*)(GA + RR::Methods::Tachyon::KeyHolderCctor), &VoiceCctor_H, (LPVOID*)&VoiceCctor_O);
+		MH_EnableHook((void*)(GA + RR::Methods::Tachyon::KeyHolderCctor));
+
 		MH_CreateHook((void*)(GA + RR::Methods::Tachyon::Ctor), &TachyonCtor_H, (LPVOID*)&TachyonCtor_O);
 		MH_EnableHook((void*)(GA + RR::Methods::Tachyon::Ctor));
 
@@ -1073,7 +1132,7 @@ namespace RR::Patches {
 
 		}
 
-		PatchLog("[Patch] hooks installed: Referee x4, TLS, SendRequest, CheatMgr, DUID, ImgSig, getaddrinfo, GetAddrInfoW%s%s",
+		PatchLog("[Patch] hooks installed: Referee x4, TLS, SendRequest, CheatMgr, DUID, ImgSig, Voice, getaddrinfo, GetAddrInfoW%s%s",
 			photonConnectHook ? ", PhotonNsPort" : "", RR::Config::EnableTracing ? " + tracing" : "");
 		// Either host may legitimately be unset -- both come from the ini and nothing is compiled in --
 		// so say so rather than logging a blank.

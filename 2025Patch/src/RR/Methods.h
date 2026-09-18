@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../Utils/globals.h"
 
 namespace RR::Methods::Referee {
@@ -274,6 +274,16 @@ namespace RR::Methods::Il2cpp {
 // callers -- the ctor reads the field directly. Do not hook them.
 namespace RR::Methods::Tachyon {
 	uintptr_t Ctor = 0x82795E0;  // BAOFAOBLAMJ..ctor(BAAIILIKHPH)
+
+	// DMIBBCKIGCG..cctor -- the static constructor that installs Rec Room's own key. THIS is the
+	// re-key hook point, not the TachyonClient ctor: see the VOICE KEY block in Patches.h. Its body
+	// (read from the memory carve; the on-disk bytes are encrypted) is what proves the offsets below:
+	//   0827A894  mov rcx, [rip+0x4F2F25D]   -> 0xD1A9AF8, i.e. KeyHolderTypeInfo, the SAME slot
+	//   0827A89B  mov rdx, [rcx+0x90]        -> Class_StaticFields
+	//   0827A8C9  mov rax, [rip+0x4E8C2A0]   -> a string literal
+	//   0827A8D0  mov [rcx+8], rax           -> Static_ServerKeyXml
+	// It then fills +0x10 and +0x18 with two more literals and +0x00 with an object.
+	uintptr_t KeyHolderCctor = 0x827A820;
 }
 
 namespace RR::Offsets::Tachyon {

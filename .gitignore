@@ -47,3 +47,8 @@
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# RSA key material for the voice (Tachyon) handshake re-key.
+# priv.xml belongs on the voice server only -- never in the repo or the release zip.
+pub.xml
+priv.xml
