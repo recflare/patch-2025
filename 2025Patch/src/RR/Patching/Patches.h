@@ -594,7 +594,7 @@ bool IsPhotonHost(const std::string& node) {
 
 // Telemetry/analytics/crash/feature-flag hosts that do not exist on the archival backend. They never
 // resolve, but every attempt still goes to the OS resolver and the client retries on a timer, and the
-// System.Net.Http ones (RudderStack/Statsig/Unity) tie up connection-pool slots the room-load path
+// System.Net.Http ones (RudderStack/Unity) tie up connection-pool slots the room-load path
 // then waits behind -- Player.log fills with "Curl error 6: Could not resolve host" and a storm of
 // ServicePointScheduler.WaitAsync stalls. Failing the lookup ourselves (WSAHOST_NOT_FOUND) returns the
 // SAME "not found" the resolver eventually would, just instantly, so the client's existing
@@ -605,7 +605,6 @@ bool IsPhotonHost(const std::string& node) {
 bool IsDeadHost(const std::string& node) {
 	static const char* kDeadHosts[] = {
 		"rudderstack.com",    // RecNet analytics data plane
-		"statsigapi.net",     // Statsig feature flags
 		"backtrace.io",       // Backtrace crash upload -- LOAD-BEARING, not just telemetry hygiene:
 		                      // its upload backlog is what starves the queue until Photon
 		                      // disconnects. See the PHOTON BACKEND SELECTION block above.

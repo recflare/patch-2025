@@ -57,8 +57,8 @@ namespace RR::Config {
 	// already in 2025patch.log, so this is only for live poking.
 	bool EnableConsole = false;
 
-	// THIRD-PARTY telemetry / analytics / crash-reporting hosts (RudderStack, Statsig, Backtrace,
-	// Unity cloud). Most of these are still LIVE (verified 2026-08-17: statsigapi.net, submit.backtrace.io
+	// THIRD-PARTY telemetry / analytics / crash-reporting hosts (RudderStack, Backtrace,
+	// Unity cloud). Most of these are still LIVE (verified 2026-08-17: submit.backtrace.io
 	// and both cloud.unity3d.com hosts all resolve), so leaving this on is as much about not shipping
 	// an archival session's telemetry and crash dumps to unrelated companies as it is about latency.
 	// true = fail those lookups instantly at the getaddrinfo hook. Substrings are IsDeadHost in Patches.h.
@@ -259,7 +259,7 @@ namespace RR::Config {
 			"; unfocused. Everything it prints is already in 2025patch.log.\n"
 			"EnableConsole=%s\n"
 			"\n"
-			"; Fail third-party telemetry/analytics host lookups (RudderStack, Statsig, Backtrace,\n"
+			"; Fail third-party telemetry/analytics host lookups (RudderStack, Backtrace,\n"
 			"; Unity cloud) instantly. Most are still live, so this also keeps an archival session's\n"
 			"; telemetry and crash dumps from reaching unrelated companies. Do not add recflare hosts.\n"
 			"BlockDeadHosts=%s\n"
