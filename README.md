@@ -60,3 +60,10 @@ Referee bypass and the rest of the patch still apply, the client just keeps talk
 | `EnableTracing` | `false` | verbose diagnostic hooks; chatty, only for investigating |
 
 Whatever ends up in effect is logged as `[Config] ...` in `2025patch.log`.
+
+## Archival / preservation
+
+Verified working configuration for build 20250718.01 (the July 2025 drop), plus notes on
+what does *not* work (proxy `Referee.dll` — the protector integrity-checks its own file,
+so a drop-in loader is not possible for this build), the Windows Defender situation, and
+the dump/analysis workflow: see [PRESERVATION.md](PRESERVATION.md).
