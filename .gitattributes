@@ -3,3 +3,7 @@
 
 # Batch files are parsed line-by-line by cmd.exe, which wants CRLF.
 *.bat text eol=crlf
+
+# Images are binary.
+*.png binary
+*.jpg binary

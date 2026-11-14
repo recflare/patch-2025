@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Builds both projects in the solution (2025Patch.dll and Injector.exe).
+    Builds the solution (2025Patch.dll, Injector.exe and PreserveLoader.dll).
 
 .DESCRIPTION
     Locates MSBuild via vswhere, builds 2025Patch.sln, and reports the resulting
@@ -110,14 +110,14 @@ if ($Clean) {
 
 # Both projects write to the solution-level output directory.
 $outDir = Join-Path $root "$Platform\$Configuration"
-$artifacts = @('2025Patch.dll', 'Injector.exe')
+$artifacts = @('2025Patch.dll', 'Injector.exe', 'PreserveLoader.dll')
 
 # Files that ship beside the binaries. The ini is byte-identical to what Config::WriteDefaultFile
 # writes on first run, so it only saves the user a launch to discover the knobs; the two .bat
 # launchers resolve everything relative to themselves and therefore only work from the game folder.
 # Staged here rather than in the CI workflow so a local build and CI produce the same flat drop-in
 # set from one source of truth -- the release zip is packed straight from this directory.
-$dropIns = @('2025patch.ini', 'RecRoomScreen.bat', 'RecRoomVR.bat')
+$dropIns = @('2025patch.ini', 'RecRoomScreen.bat', 'RecRoomVR.bat', 'Install-PreserveLoader.bat', 'RecRoomPreserve.bat', 'Restore-RefereeProtector.bat')
 
 Write-Host ''
 Write-Host "BUILD SUCCEEDED -> $outDir" -ForegroundColor Green
