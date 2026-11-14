@@ -986,17 +986,22 @@ namespace RR::Patches {
 
 		MH_Initialize();
 
-		MH_CreateHook((void*)(Referee + RR::Methods::Referee::Check1), &nop_H, (LPVOID*)&nop_O);
-		MH_EnableHook((void*)(Referee + RR::Methods::Referee::Check1));
+		// Create a hook and log the result. A failure here is exactly the class of silent
+		// breakage that looks like "the patch does nothing": the protector is left armed and
+		// quits the game once its checks fire. Recording the MH_STATUS means debugging
+		// starts with the answer instead of a crash dump.
+		auto InstallHook = [&](uintptr_t target, void* detour, void* original, const char* label) {
+			MH_STATUS created = MH_CreateHook((void*)target, detour, (LPVOID*)original);
+			MH_STATUS enabled = (created == MH_OK) ? MH_EnableHook((void*)target) : created;
+			if (created != MH_OK || enabled != MH_OK) {
+				PatchLog("[Patch] hook FAILED %s at 0x%llX (create=%d enable=%d)", label, (unsigned long long)target, (int)created, (int)enabled);
+			}
+		};
 
-		MH_CreateHook((void*)(Referee + RR::Methods::Referee::Check2), &nop_H, (LPVOID*)&nop_O);
-		MH_EnableHook((void*)(Referee + RR::Methods::Referee::Check2));
-
-		MH_CreateHook((void*)(Referee + RR::Methods::Referee::Check3), &nop_H, (LPVOID*)&nop_O);
-		MH_EnableHook((void*)(Referee + RR::Methods::Referee::Check3));
-
-		MH_CreateHook((void*)(Referee + RR::Methods::Referee::Check4), &nop_H, (LPVOID*)&nop_O);
-		MH_EnableHook((void*)(Referee + RR::Methods::Referee::Check4));
+		InstallHook((uintptr_t)(Referee + RR::Methods::Referee::Check1), &nop_H, &nop_O, "Referee.Check1");
+		InstallHook((uintptr_t)(Referee + RR::Methods::Referee::Check2), &nop_H, &nop_O, "Referee.Check2");
+		InstallHook((uintptr_t)(Referee + RR::Methods::Referee::Check3), &nop_H, &nop_O, "Referee.Check3");
+		InstallHook((uintptr_t)(Referee + RR::Methods::Referee::Check4), &nop_H, &nop_O, "Referee.Check4");
 
 		MH_CreateHook((void*)(GA + RR::Methods::LegacyTlsAuthentication::NotifyServerCertificate), &nop_H, (LPVOID*)&nop_O);
 		MH_EnableHook((void*)(GA + RR::Methods::LegacyTlsAuthentication::NotifyServerCertificate));

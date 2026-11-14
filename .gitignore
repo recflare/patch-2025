@@ -52,3 +52,9 @@ desktop.ini
 # priv.xml belongs on the voice server only -- never in the repo or the release zip.
 pub.xml
 priv.xml
+
+# Rec Room game files + runtime dumps -- never commit
+recroom/
+client.zip
+dumps/
+*.dmp

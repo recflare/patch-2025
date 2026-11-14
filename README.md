@@ -60,3 +60,11 @@ Referee bypass and the rest of the patch still apply, the client just keeps talk
 | `EnableTracing` | `false` | verbose diagnostic hooks; chatty, only for investigating |
 
 Whatever ends up in effect is logged as `[Config] ...` in `2025patch.log`.
+
+## Archival / preservation
+
+Verified working configuration for build 20250718.01 (the July 2025 drop). Two attachment
+paths: a drop-in preservation loader (`Referee.dll` proxy, game binds itself, extension
+point `preserve\modules\`) or the classic `Injector.exe`. See [PRESERVATION.md](PRESERVATION.md)
+for the quick start for both, the module folder, and the root cause of the earlier
+proxy-crash confusion.

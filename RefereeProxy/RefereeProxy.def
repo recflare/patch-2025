@@ -1,0 +1,6 @@
+; PreserveLoader.dll exports:
+;   xVnMnf                 -- the protector gate, implemented natively by the trampoline
+;   GetPreserveProtector   -- returns the real protector's load base for the patch
+EXPORTS
+    xVnMnf
+    GetPreserveProtector

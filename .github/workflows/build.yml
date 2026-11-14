@@ -39,11 +39,16 @@ jobs:
           path: |
             x64/Release/2025Patch.dll
             x64/Release/Injector.exe
+            x64/Release/PreserveLoader.dll
             x64/Release/2025patch.ini
             x64/Release/RecRoomScreen.bat
             x64/Release/RecRoomVR.bat
+            x64/Release/Install-PreserveLoader.bat
+            x64/Release/RecRoomPreserve.bat
+            x64/Release/Restore-RefereeProtector.bat
             x64/Release/2025Patch.pdb
             x64/Release/Injector.pdb
+            x64/Release/PreserveLoader.pdb
 
   release:
     name: Release
@@ -63,8 +68,10 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          Compress-Archive -Path dist\2025Patch.dll, dist\Injector.exe, dist\2025patch.ini, `
-            dist\RecRoomScreen.bat, dist\RecRoomVR.bat `
+          Compress-Archive -Path dist\2025Patch.dll, dist\Injector.exe, dist\PreserveLoader.dll, `
+            dist\2025patch.ini, `
+            dist\RecRoomScreen.bat, dist\RecRoomVR.bat, `
+            dist\Install-PreserveLoader.bat, dist\RecRoomPreserve.bat, dist\Restore-RefereeProtector.bat `
             -DestinationPath "2025Patch-$env:GITHUB_REF_NAME-x64.zip"
 
       - name: Create release

@@ -4,7 +4,24 @@
 uintptr_t GA = (uintptr_t)GetModuleHandleA("GameAssembly.dll");
 const IMAGE_NT_HEADERS* NtHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(GA + reinterpret_cast<IMAGE_DOS_HEADER*>(GA)->e_lfanew);
 
-uintptr_t Referee = (uintptr_t)GetModuleHandleA("Referee.dll");
+// Resolve the real protector base. When the patch loads under a preservation proxy
+// (PreserveLoader.dll renamed to Referee.dll by the installer), the module registered
+// as "Referee.dll" is the proxy, not the protector -- the proxy exports
+// GetPreserveProtector() to hand out the protector's load base instead. Without the
+// proxy (the classic injector flow, game root holds the protector itself) the symbol
+// is absent and we use the module handle directly.
+uintptr_t ResolveProtectorBase() {
+	HMODULE referee = GetModuleHandleA("Referee.dll");
+	if (referee) {
+		FARPROC getProtector = GetProcAddress(referee, "GetPreserveProtector");
+		if (getProtector) {
+			uintptr_t real = (uintptr_t)((void* (*)(void))getProtector)();
+			if (real) return real;
+		}
+	}
+	return (uintptr_t)referee;
+}
+uintptr_t Referee = ResolveProtectorBase();
 
 uint64_t* RetAddr = nullptr;
 
